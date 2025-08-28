@@ -1,4 +1,3 @@
-python -c "import sys, streamlit; print('PY:', sys.executable); print('ST:', streamlit.__version__)"
 # app.py
 import io, json, re, math, random, time
 from datetime import date, timedelta
