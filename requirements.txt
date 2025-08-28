@@ -5,4 +5,5 @@ pyarrow>=14,<20
 pulp>=2.7,<3.0
 xlsxwriter>=3.1,<4.0
 openpyxl>=3.1,<4.0
+boto3==1.34.162
 
