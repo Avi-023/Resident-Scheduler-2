@@ -1,7 +1,8 @@
-streamlit==1.35.0
-pandas==2.2.3
-numpy>=2.1.0
-xlsxwriter==3.2.0
-openpyxl==3.1.2
-pulp==2.8.0
-# pyarrow removed (not needed for your app)
+streamlit>=1.31,<2.0
+pandas>=2.1,<3.0
+numpy>=1.26,<3.0
+pyarrow>=14,<20
+pulp>=2.7,<3.0
+xlsxwriter>=3.1,<4.0
+openpyxl>=3.1,<4.0
+
