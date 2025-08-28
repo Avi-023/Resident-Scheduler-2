@@ -1,0 +1,8 @@
+streamlit==1.35.0
+pandas==2.2.2
+numpy==1.26.4
+xlsxwriter==3.2.0
+openpyxl==3.1.2
+pyarrow==16.1.0   # optional: faster tables; safe to remove
+pulp==2.8.0       # optional: ILP optimizer; safe to remove
+
