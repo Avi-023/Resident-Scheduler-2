@@ -507,91 +507,135 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
 
     rng = random.Random(int(constraints.get("random_seed", 0) or 0))
 
-    # ========= Plan Pittsburgh 3-block runs (before per-block assignment) =========
+    # ========= Plan Pittsburgh 3-block runs (GLOBAL solve) =========
     if ENABLE_PGH:
-        # Occupied blocks from pre-fixed entries (respect user locks/prefill)
-        occupied = set()
+        # Pre-filled Pittsburgh occupancy & per-resident prefilled indexes
         pre_by_res = defaultdict(set)
+        preoccupied_blocks = set()
         for bi,_hdr in enumerate(headers):
             for n in names:
                 if schedule_df.loc[n, headers[bi]] == "Pittsburgh":
-                    occupied.add(bi)
                     pre_by_res[n].add(bi)
+                    preoccupied_blocks.add(bi)
 
-        # NOTE: Hard rule — ALL PGY-3 must get a 3-block PGH run.
-        # We'll schedule mandatory PGY-3 first, then (optionally) others if allowed.
+        # Locked rows: do not alter if they already have PGH; otherwise we still must try to place them
         locked_rows = set()
         for r in roster_df.itertuples(index=False):
             if getattr(r, "Lock", "").strip().lower() in {"row","true","y","yes"}:
                 locked_rows.add(r.Resident)
 
         mandatory_pgh = [n for n in names if roster_map[n]["PGY"]=="PGY-3"]
-        optional_pgh  = []
-        if not PG3_ONLY_PGH:
-            optional_pgh = [n for n in names if n not in mandatory_pgh and role_of(n, roster_map) in {"Junior","Senior"}]
 
-        # helper: block allowed?
-        def block_allowed(t: int) -> bool:
-            if t in PGH_BLOCK_BLACKLIST: return False
+        # Helper: block allowed under current policy
+        def _block_allowed(t: int, honor_blacklist: bool) -> bool:
+            if honor_blacklist and (t in PGH_BLOCK_BLACKLIST):
+                return False
             s,e = blocks[t]
-            if block_has_late_january(s,e,start_date): return False
+            # Always avoid late January
+            if block_has_late_january(s,e,start_date):
+                return False
             return True
 
-        def try_place_resident(n: str) -> bool:
-            # If already has an exact 3-block contiguous window, keep it
+        # Pre-preserve any existing exact 3-run
+        fixed_windows = {}
+        used_blocks = set(preoccupied_blocks)
+        for n in mandatory_pgh:
             existing_sorted = sorted(pre_by_res.get(n, []))
-            if existing_sorted:
-                runs=[]; start=None; prev=None
-                for bi in existing_sorted:
-                    if start is None:
-                        start=bi; prev=bi
-                    elif bi==prev+1:
-                        prev=bi
-                    else:
-                        runs.append((start,prev)); start=bi; prev=bi
-                if start is not None: runs.append((start,prev))
-                for a,b in runs:
-                    if (b-a+1)==3:
-                        for t in range(a,b+1): occupied.add(t)
-                        log_reason(reasons, n, headers[a], "Pittsburgh pre-fixed 3-block run preserved")
-                        return True
-                # Otherwise we'll try to re-plan below
+            if not existing_sorted:
+                continue
+            runs=[]; start=None; prev=None
+            for bi in existing_sorted:
+                if start is None:
+                    start=bi; prev=bi
+                elif bi==prev+1:
+                    prev=bi
+                else:
+                    runs.append((start,prev)); start=bi; prev=bi
+            if start is not None: runs.append((start,prev))
+            for a,b in runs:
+                if (b-a+1)==3:
+                    fixed_windows[n] = tuple(range(a,b+1))
+                    used_blocks.update(range(a,b+1))
+                    log_reason(reasons, n, headers[a], "Pittsburgh pre-fixed 3-block run preserved")
+                    break  # take the first exact run
 
-            # do not modify fully locked rows lacking PGH; checks will error if missing
-            if n in locked_rows and not existing_sorted:
+        def build_candidates(honor_blacklist: bool):
+            cands = {}
+            for n in mandatory_pgh:
+                if n in fixed_windows:
+                    continue
+                lst=[]
+                for s_idx in range(0, len(blocks)-2):
+                    window = (s_idx, s_idx+1, s_idx+2)
+                    if any(not _block_allowed(t, honor_blacklist) for t in window):
+                        continue
+                    # cannot overlap PGH blocks already preoccupied by other residents
+                    if any((t in preoccupied_blocks and t not in pre_by_res.get(n,set())) for t in window):
+                        continue
+                    # name-level availability + not pre-filled with other non-PGH services
+                    ok=True
+                    for t in window:
+                        hdr = headers[t]
+                        if is_unavailable(n, roster_map[n]["PGY"], "Pittsburgh", t):
+                            ok=False; break
+                        v = schedule_df.loc[n, hdr]
+                        if (pd.notna(v) and str(v).strip()!="" and v!="Pittsburgh"):
+                            ok=False; break
+                    if ok:
+                        lst.append(window)
+                cands[n]=lst
+            return cands
+
+        def solve_assignment(cands):
+            # Backtracking over residents with least options first
+            order = [n for n in mandatory_pgh if n not in fixed_windows]
+            order.sort(key=lambda n: (len(cands.get(n, [])), n))
+            assignment = dict(fixed_windows)  # start with fixed
+            used = set(used_blocks)
+            # mark used by fixed windows
+            for w in fixed_windows.values():
+                used.update(w)
+
+            def dfs(i: int) -> bool:
+                if i == len(order):
+                    return True
+                n = order[i]
+                for w in cands.get(n, []):
+                    if any(t in used for t in w):
+                        continue
+                    assignment[n] = w
+                    used.update(w)
+                    if dfs(i+1):
+                        return True
+                    # backtrack
+                    used.difference_update(w)
+                    assignment.pop(n, None)
                 return False
 
-            # place a 3-block window
-            for s_idx in range(0, len(blocks)-2):
-                window = [s_idx, s_idx+1, s_idx+2]
-                # allowed + capacity (single PGH per block)
-                if any(not block_allowed(t) for t in window): continue
-                if any((t in occupied and (t not in pre_by_res.get(n,set()))) for t in window): continue
-                # name-level availability + not pre-filled with other services
-                ok=True
-                for t in window:
-                    hdr = headers[t]
-                    if is_unavailable(n, roster_map[n]["PGY"], "Pittsburgh", t):
-                        ok=False; break
-                    v = schedule_df.loc[n, hdr]
-                    if (pd.notna(v) and str(v).strip()!="" and v!="Pittsburgh"):
-                        ok=False; break
-                if not ok: continue
-                # assign window
-                for t in window:
+            ok = dfs(0)
+            return ok, assignment
+
+        # Try with blacklist honored first
+        cands = build_candidates(honor_blacklist=True)
+        solved, assign_map = solve_assignment(cands)
+
+        # If impossible, retry ignoring the blacklist (still avoids late Jan)
+        if not solved:
+            cands2 = build_candidates(honor_blacklist=False)
+            solved, assign_map = solve_assignment(cands2)
+            if solved:
+                log_reason(reasons, "(PGH planner)", headers[0], "Replanned Pittsburgh ignoring blacklist to satisfy all PGY-3 runs")
+
+        # Apply if solved
+        if solved:
+            for n, win in assign_map.items():
+                for t in win:
                     schedule_df.loc[n, headers[t]] = "Pittsburgh"
-                    occupied.add(t)
-                log_reason(reasons, n, headers[s_idx], f"Pittsburgh 3-block run planned (blocks {s_idx+1}-{s_idx+3})")
-                return True
-            return False
-
-        # 1) Place all mandatory PGY-3 first
-        for n in sorted(mandatory_pgh):
-            try_place_resident(n)
-
-        # 2) Optionally place others if toggle allows (without displacing PGY-3)
-        for n in sorted(optional_pgh):
-            try_place_resident(n)
+                a = min(win); b = max(win)
+                log_reason(reasons, n, headers[a], f"Pittsburgh 3-block run planned (blocks {a+1}-{b+1})")
+        else:
+            # Not solvable even without blacklist; leave for checks to flag
+            log_reason(reasons, "(PGH planner)", headers[0], "Unable to schedule all PGY-3 Pittsburgh runs under hard constraints")
 
     # ---------------- Per-block assignment ----------------
     for bi,(bs,be) in enumerate(blocks):
@@ -677,11 +721,8 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
         assign_first([n for n in names if roster_map[n]["PGY"]=="PGY-1" and n not in locked_rows], bi, "Floor")
 
         # --------- Vascular baseline BEFORE RG/Gold seeding (attempt S/J/I; must include a Senior) ---------
-        # Attempt Senior first (hard: Vascular must have a Senior)
-        assign_first([n for n in names if is_senior(n) and n not in locked_rows], bi, "Vascular")
-        # Attempt Intern
+        assign_first([n for n in names if is_senior(n) and n not in locked_rows], bi, "Vascular")  # Senior required (hard rule checked later)
         assign_first([n for n in names if is_intern(n) and n not in locked_rows], bi, "Vascular")
-        # Try adding a PGY-2/3 as 3rd on Vascular (fairly) if cap allows
         if count_team_here(bi,"Vascular") >= 2 and count_team_here(bi,"Vascular") < VASC_MAX:
             avail_for_vasc = [n for n in names if pd.isna(schedule_df.loc[n, hdr])
                               and n not in locked_rows
@@ -1562,7 +1603,7 @@ with st.sidebar:
     # - Require Senior on Gold
     # - Red/Green must include Sr + Jr + Intern
     # - Vascular = Senior + Junior/Intern
-    st.checkbox("Allow a 4th resident on Red/Green", True, key="rg_allow_fourth")  # kept for UI parity; hard rule enforces 3–4 regardless
+    st.checkbox("Allow a 4th resident on Red/Green", True, key="rg_allow_fourth")  # UI parity; hard rule enforces 3–4 regardless
 
     st.number_input("Gold team cap", min_value=1, max_value=10, value=4, key="gold_cap")
     st.number_input("Red/Green team cap", min_value=3, max_value=10, value=4, key="rg_cap")
@@ -1580,8 +1621,8 @@ with st.sidebar:
     st.markdown("**Pittsburgh rotation**")
     st.checkbox("Enable Pittsburgh rotation", True, key="enable_pittsburgh")
     st.checkbox("Pittsburgh = PGY-3 only", True, key="pg3_pittsburgh")
-    st.text_input("Pittsburgh block blacklist (comma-separated indices 0–12)", value="0,6,12", key="pgh_block_blacklist_txt")
-    st.caption("Pittsburgh auto-assigns **3 consecutive blocks** for **all PGY-3 residents** (capacity 1 per block), avoiding late Jan (Jan 16–31).")
+    st.text_input("Pittsburgh block blacklist (comma-separated indices 0–12)", value="", key="pgh_block_blacklist_txt")
+    st.caption("Planner assigns **3 consecutive blocks** for **all PGY-3 residents** (capacity 1 per block), avoiding **late Jan (Jan 16–31)**. If no solution with your blacklist, it will retry **ignoring** it.")
 
     st.markdown("**Fairness/Soft penalties**")
     st.slider("Penalty: NF gap violations", 0.0, 10.0, 3.0, 0.5, key="penalty_nf_gap")
@@ -1698,7 +1739,7 @@ with colA:
                 except Exception:
                     pass
         except Exception:
-            blk_list = [0,6,12]
+            blk_list = []
 
         try:
             elig_json = st.session_state.eligibility_calendars_json.strip()
