@@ -119,6 +119,16 @@ def safe_sheet_name(name: str, taken: set) -> str:
     taken.add(n)
     return n
 
+# Pittsburgh helper: detect late-January overlap for the academic year
+def block_has_late_january(s: date, e: date, ay_start: date) -> bool:
+    january_year = ay_start.year + 1
+    d = s
+    while d <= e:
+        if d.year == january_year and d.month == 1 and d.day >= 16:
+            return True
+        d += timedelta(days=1)
+    return False
+
 # --------------------------
 # Lite-mode friendly table
 # --------------------------
@@ -355,7 +365,7 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
         if bi <= 1: return None
         return schedule_df.loc[name, headers[bi-2]]
 
-    # Prevent >2 consecutive same rotation
+    # Prevent >2 consecutive same rotation (service-agnostic helper; callers can override limit)
     def exceeds_consecutive_limit(name: str, bi: int, label: str, limit:int=2) -> bool:
         if bi < limit:
             return False
@@ -370,11 +380,20 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
         lbl = label
         return sum(1 for n in names if schedule_df.loc[n, headers[bi]] == lbl and role_of(n, roster_map) == "Senior")
 
-    # Caps
-    GOLD_MAX   = int(constraints.get("gold_cap", 4))
-    RG_MAX     = int(constraints.get("rg_cap", 4))
-    VASC_MAX   = int(constraints.get("vascular_cap", 3))
-    BREAST_MAX = 1  # <-- one-at-a-time rule
+    # Caps (UI-cap values still available, but Gold/RG will be constrained to 3–4 by hard rule below)
+    GOLD_CAP_UI = int(constraints.get("gold_cap", 4))
+    RG_CAP_UI   = int(constraints.get("rg_cap", 4))
+    VASC_MAX    = int(constraints.get("vascular_cap", 3))
+    BREAST_MAX  = 1
+
+    # Hard targets
+    GOLD_MIN, GOLD_MAX = 3, 4
+    RG_MIN,   RG_MAX   = 3, 4
+
+    # Pittsburgh constraints
+    ENABLE_PGH            = bool(constraints.get("enable_pittsburgh", True))
+    PG3_ONLY_PGH          = bool(constraints.get("pg3_pittsburgh", True))
+    PGH_BLOCK_BLACKLIST   = set(int(x) for x in constraints.get("pgh_block_blacklist", []))
 
     # Vascular 3rd-member per-resident cap
     vasc_third_cap = int(constraints.get("vascular_third_cap_per_resident", 1))
@@ -392,7 +411,7 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
 
     MIN_NF_GAP_BLOCKS = 1
 
-    # Service minima
+    # Service minima (kept for ICU; Gold/RG min enforced as hard rule)
     svc_min = constraints.get("service_minima", {"Gold":3, "Red/Green":3, "ICU":1})
 
     # Eligibility calendars (JSON spec)
@@ -443,21 +462,37 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
     def would_violate_senior_cap(name: str, bi: int, label: str) -> bool:
         return is_senior(name) and seniors_on(bi, label) >= 2
 
-    def would_exceed_run(name: str, bi: int, label: str) -> bool:
-        return exceeds_consecutive_limit(name, bi, label, limit=2)
+    def would_exceed_run(name: str, bi: int, label: str, limit:int=2) -> bool:
+        return exceeds_consecutive_limit(name, bi, label, limit=limit)
+
+    # Penalty: avoid two seniors from same PGY on the same team if a second senior is needed
+    def senior_same_year_penalty(name: str, bi: int, label: str) -> int:
+        if not is_senior(name): return 0
+        existing = [x for x in names if schedule_df.loc[x, headers[bi]] == label and is_senior(x)]
+        if len(existing) == 1:
+            return 0 if pgy_of(name, roster_map) != pgy_of(existing[0], roster_map) else 1
+        return 0
 
     def assign_first(pool, bi, label):
-        """Fewest prior on that label; avoid consecutive repeat; forbid >2-run; respect senior<=2; returns pick or None."""
+        """Fewest prior on that label; avoid consecutive repeat; forbid >2-run (or 3 for PGH); respect senior<=2; prefer 4/5 mix."""
         hdr = headers[bi]
         cand=[n for n in pool if pd.isna(schedule_df.loc[n, hdr])
               and not is_unavailable(n, roster_map[n]["PGY"], label, bi)
               and not would_violate_senior_cap(n, bi, label)
-              and not would_exceed_run(n, bi, label)]
+              and not would_exceed_run(n, bi, label, limit=(3 if label=="Pittsburgh" else 2))]
         if not cand: return None
         counts={n:int((schedule_df.loc[n]==label).sum()) for n in cand}
-        pick=sorted(cand, key=lambda n:(counts[n], repeat_penalty(n, bi, label), n))[0]
+        pick=sorted(
+            cand,
+            key=lambda n: (
+                counts[n],
+                repeat_penalty(n, bi, label),
+                senior_same_year_penalty(n, bi, label),
+                n
+            )
+        )[0]
         schedule_df.loc[pick, headers[bi]]=label
-        log_reason(reasons, pick, headers[bi], f"Assigned to {label} (min prior; avoid consecutive; no >2-run)")
+        log_reason(reasons, pick, headers[bi], f"Assigned to {label} (min prior; avoid consecutive; prefer Sr mix)")
         return pick
 
     def team(bi,label): return [n for n in names if schedule_df.loc[n, headers[bi]]==label]
@@ -472,8 +507,94 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
 
     rng = random.Random(int(constraints.get("random_seed", 0) or 0))
 
+    # ========= Plan Pittsburgh 3-block runs (before per-block assignment) =========
+    if ENABLE_PGH:
+        # Occupied blocks from pre-fixed entries (respect user locks/prefill)
+        occupied = set()
+        pre_by_res = defaultdict(set)
+        for bi,_hdr in enumerate(headers):
+            for n in names:
+                if schedule_df.loc[n, headers[bi]] == "Pittsburgh":
+                    occupied.add(bi)
+                    pre_by_res[n].add(bi)
+
+        # NOTE: Hard rule — ALL PGY-3 must get a 3-block PGH run.
+        # We'll schedule mandatory PGY-3 first, then (optionally) others if allowed.
+        locked_rows = set()
+        for r in roster_df.itertuples(index=False):
+            if getattr(r, "Lock", "").strip().lower() in {"row","true","y","yes"}:
+                locked_rows.add(r.Resident)
+
+        mandatory_pgh = [n for n in names if roster_map[n]["PGY"]=="PGY-3"]
+        optional_pgh  = []
+        if not PG3_ONLY_PGH:
+            optional_pgh = [n for n in names if n not in mandatory_pgh and role_of(n, roster_map) in {"Junior","Senior"}]
+
+        # helper: block allowed?
+        def block_allowed(t: int) -> bool:
+            if t in PGH_BLOCK_BLACKLIST: return False
+            s,e = blocks[t]
+            if block_has_late_january(s,e,start_date): return False
+            return True
+
+        def try_place_resident(n: str) -> bool:
+            # If already has an exact 3-block contiguous window, keep it
+            existing_sorted = sorted(pre_by_res.get(n, []))
+            if existing_sorted:
+                runs=[]; start=None; prev=None
+                for bi in existing_sorted:
+                    if start is None:
+                        start=bi; prev=bi
+                    elif bi==prev+1:
+                        prev=bi
+                    else:
+                        runs.append((start,prev)); start=bi; prev=bi
+                if start is not None: runs.append((start,prev))
+                for a,b in runs:
+                    if (b-a+1)==3:
+                        for t in range(a,b+1): occupied.add(t)
+                        log_reason(reasons, n, headers[a], "Pittsburgh pre-fixed 3-block run preserved")
+                        return True
+                # Otherwise we'll try to re-plan below
+
+            # do not modify fully locked rows lacking PGH; checks will error if missing
+            if n in locked_rows and not existing_sorted:
+                return False
+
+            # place a 3-block window
+            for s_idx in range(0, len(blocks)-2):
+                window = [s_idx, s_idx+1, s_idx+2]
+                # allowed + capacity (single PGH per block)
+                if any(not block_allowed(t) for t in window): continue
+                if any((t in occupied and (t not in pre_by_res.get(n,set()))) for t in window): continue
+                # name-level availability + not pre-filled with other services
+                ok=True
+                for t in window:
+                    hdr = headers[t]
+                    if is_unavailable(n, roster_map[n]["PGY"], "Pittsburgh", t):
+                        ok=False; break
+                    v = schedule_df.loc[n, hdr]
+                    if (pd.notna(v) and str(v).strip()!="" and v!="Pittsburgh"):
+                        ok=False; break
+                if not ok: continue
+                # assign window
+                for t in window:
+                    schedule_df.loc[n, headers[t]] = "Pittsburgh"
+                    occupied.add(t)
+                log_reason(reasons, n, headers[s_idx], f"Pittsburgh 3-block run planned (blocks {s_idx+1}-{s_idx+3})")
+                return True
+            return False
+
+        # 1) Place all mandatory PGY-3 first
+        for n in sorted(mandatory_pgh):
+            try_place_resident(n)
+
+        # 2) Optionally place others if toggle allows (without displacing PGY-3)
+        for n in sorted(optional_pgh):
+            try_place_resident(n)
+
     # ---------------- Per-block assignment ----------------
-    for bi in range(13):
+    for bi,(bs,be) in enumerate(blocks):
         hdr = headers[bi]
 
         # Locked rows: skip assigning any locked rows (keep base_fixed or prior assignment)
@@ -555,11 +676,11 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
         # Floor (HARD): PGY-1 only
         assign_first([n for n in names if roster_map[n]["PGY"]=="PGY-1" and n not in locked_rows], bi, "Floor")
 
-        # --------- Vascular baseline & junior inclusion BEFORE RG seeding ---------
-        if constraints.get("vascular_sr_jr", True):
-            assign_first([n for n in names if is_senior(n) and n not in locked_rows], bi, "Vascular")
-            assign_first([n for n in names if is_intern(n) and n not in locked_rows], bi, "Vascular")
-
+        # --------- Vascular baseline BEFORE RG/Gold seeding (attempt S/J/I; must include a Senior) ---------
+        # Attempt Senior first (hard: Vascular must have a Senior)
+        assign_first([n for n in names if is_senior(n) and n not in locked_rows], bi, "Vascular")
+        # Attempt Intern
+        assign_first([n for n in names if is_intern(n) and n not in locked_rows], bi, "Vascular")
         # Try adding a PGY-2/3 as 3rd on Vascular (fairly) if cap allows
         if count_team_here(bi,"Vascular") >= 2 and count_team_here(bi,"Vascular") < VASC_MAX:
             avail_for_vasc = [n for n in names if pd.isna(schedule_df.loc[n, hdr])
@@ -575,52 +696,49 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
                                                             n))[0]
                 schedule_df.loc[pick, hdr] = "Vascular"
                 vasc_junior_counts[pick] += 1
-                log_reason(reasons, pick, hdr, "Vascular 3rd member (PGY-2/3 fairness; before RG seeding)")
+                log_reason(reasons, pick, hdr, "Vascular 3rd member (PGY-2/3 fairness)")
 
         # Breast (PGY-2+, cap=1)
-        if constraints.get("breast_pgy2plus", True) and count_team_here(bi, "Breast") < BREAST_MAX:
+        if count_team_here(bi, "Breast") < BREAST_MAX:
             assign_first([n for n in names if roster_map[n]["PGY"] in {"PGY-2","PGY-3","PGY-4","PGY-5"} and n not in locked_rows], bi, "Breast")
 
-        # Pre-seed Gold Senior
-        if constraints.get("senior_on_gold", True):
-            assign_first([n for n in names if is_senior(n) and n not in locked_rows], bi, "Gold")
+        # --------- Seed Gold & Red/Green to achieve S/J/I (attempts) and ensure Senior presence (hard) ---------
+        # Gold: Senior, Junior, Intern (in that order)
+        assign_first([n for n in names if is_senior(n) and n not in locked_rows], bi, "Gold")
+        assign_first([n for n in names if is_junior(n) and n not in locked_rows], bi, "Gold")
+        assign_first([n for n in names if is_intern(n) and n not in locked_rows], bi, "Gold")
 
-        # Red/Green composition minima AFTER vascular junior attempt
-        if constraints.get("rg_require_sji", True):
-            assign_first([n for n in names if is_senior(n) and n not in locked_rows], bi, "Red/Green")
-            assign_first([n for n in names if is_junior(n) and n not in locked_rows], bi, "Red/Green")
-            assign_first([n for n in names if is_intern(n) and n not in locked_rows], bi, "Red/Green")
+        # Red/Green: Senior, Junior, Intern (in that order)
+        assign_first([n for n in names if is_senior(n) and n not in locked_rows], bi, "Red/Green")
+        assign_first([n for n in names if is_junior(n) and n not in locked_rows], bi, "Red/Green")
+        assign_first([n for n in names if is_intern(n) and n not in locked_rows], bi, "Red/Green")
 
-        # Priority fill with caps + service minima
+        # Priority fill with caps + hard min/max on Gold/RG; ICU min
         def fill_to(lbl,tgt,cap=None):
             while count_team_here(bi,lbl) < tgt and (cap is None or count_team_here(bi,lbl) < cap):
                 avail = [x for x in names if pd.isna(schedule_df.loc[x, hdr])
                          and x not in locked_rows
                          and not is_unavailable(x, roster_map[x]["PGY"], lbl, bi)
                          and not would_violate_senior_cap(x, bi, lbl)
-                         and not would_exceed_run(x, bi, lbl)]
+                         and not would_exceed_run(x, bi, lbl, limit=(3 if lbl=="Pittsburgh" else 2))]
                 if lbl == "Breast":
                     avail = [x for x in avail if roster_map[x]["PGY"] in {"PGY-2","PGY-3","PGY-4","PGY-5"}]
                 if not avail: break
                 pick=sorted(avail, key=lambda n:(int((schedule_df.loc[n]==lbl).sum()),
                                                  repeat_penalty(n, bi, lbl),
+                                                 senior_same_year_penalty(n, bi, lbl),
                                                  rng.random(), n))[0]
                 schedule_df.loc[pick, hdr]=lbl
-                log_reason(reasons, pick, hdr, f"Filled {lbl} to meet target/min/cap (avoid consecutive; no >2-run)")
+                log_reason(reasons, pick, hdr, f"Filled {lbl} to meet target/min/cap")
 
-        # Minima first
-        fill_to("Gold", max(svc_min.get("Gold",3), 0), cap=GOLD_MAX)
-        fill_to("Red/Green", max(svc_min.get("Red/Green",3), 0), cap=RG_MAX)
+        # Hard minima
+        fill_to("Gold", max(GOLD_MIN, svc_min.get("Gold",3)), cap=min(GOLD_MAX, GOLD_CAP_UI))
+        fill_to("Red/Green", max(RG_MIN, svc_min.get("Red/Green",3)), cap=min(RG_MAX, RG_CAP_UI))
         fill_to("ICU", max(svc_min.get("ICU",1), 0), cap=1)
 
-        # Remaining priority (Gold before RG)
-        if constraints.get("priority_gold_rg", True):
-            fill_to("Gold",4,cap=GOLD_MAX)
-            if constraints.get("rg_allow_fourth", True):
-                fill_to("Red/Green",4,cap=RG_MAX)
-        else:
-            fill_to("Red/Green",4 if constraints.get("rg_allow_fourth", True) else 3, cap=RG_MAX)
-            fill_to("Gold",4,cap=GOLD_MAX)
+        # Fill to hard maximums (3–4)
+        fill_to("Gold", GOLD_MAX, cap=min(GOLD_MAX, GOLD_CAP_UI))
+        fill_to("Red/Green", RG_MAX, cap=min(RG_MAX, RG_CAP_UI))
 
         # HARD: everyone must have assignment — safety fill
         tries = 0
@@ -628,7 +746,7 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
             avail=[n for n in names if pd.isna(schedule_df.loc[n, hdr])]
             if not avail or tries >= 200: break
             n = avail.pop(0)
-            # pick eligible destination prioritizing caps and avoiding consecutive & >2-run
+            # pick eligible destination prioritizing caps and avoiding consecutive & run limit
             choices = []
             for lbl, cap in (("Vascular", VASC_MAX),
                              ("Gold", GOLD_MAX),
@@ -639,11 +757,10 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
                 if lbl=="Floor" and roster_map[n]["PGY"]!="PGY-1": continue
                 if cap is not None and count_team_here(bi, lbl) >= cap: continue
                 if would_violate_senior_cap(n, bi, lbl): continue
-                if would_exceed_run(n, bi, lbl): continue
+                if would_exceed_run(n, bi, lbl, limit=(3 if lbl=="Pittsburgh" else 2)): continue
                 if lbl=="Breast" and roster_map[n]["PGY"]=="PGY-1": continue
                 choices.append(lbl)
             if not choices:
-                # fallback: still respect Breast cap and Floor rules
                 if roster_map[n]["PGY"]!="PGY-1":
                     choices = [lbl for lbl in ["Gold","Red/Green","Vascular","Breast"] if (lbl!="Breast" or count_team_here(bi,"Breast")<1)]
                 else:
@@ -674,29 +791,31 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
             if not moved:
                 break  # cannot fix further without violating hard rules
 
-        # Rebalance Gold vs Red/Green (avoid RG=4 & Gold=2; keep diff ≤ 1 where possible)
+        # Rebalance Gold vs Red/Green (keep diff ≤ 1)
         def rebalance_gold_rg():
-            while (count_team_here(bi,"Red/Green") - count_team_here(bi,"Gold")) > 1 and count_team_here(bi,"Red/Green") > 3 and count_team_here(bi,"Gold") < GOLD_MAX:
+            while abs(count_team_here(bi,"Red/Green") - count_team_here(bi,"Gold")) > 1:
+                if count_team_here(bi,"Red/Green") > count_team_here(bi,"Gold") and count_team_here(bi,"Gold") < GOLD_MAX:
+                    src = "Red/Green"; dst = "Gold"
+                elif count_team_here(bi,"Gold") > count_team_here(bi,"Red/Green") and count_team_here(bi,"Red/Green") < RG_MAX:
+                    src = "Gold"; dst = "Red/Green"
+                else:
+                    break
                 cands = []
-                for n in team(bi,"Red/Green"):
-                    if is_unavailable(n, roster_map[n]["PGY"], "Gold", bi): continue
-                    if would_violate_senior_cap(n, bi, "Gold"): continue
-                    if would_exceed_run(n, bi, "Gold"): continue
-                    # Ensure RG keeps ≥3 with S/J/I composition after moving
-                    rg_after = [x for x in team(bi,"Red/Green") if x != n]
-                    if len(rg_after) < 3: continue
-                    roles_after = {role_of(x, roster_map) for x in rg_after}
-                    if not {"Senior","Junior","Intern"}.issubset(roles_after): continue
+                for n in team(bi, src):
+                    if is_unavailable(n, roster_map[n]["PGY"], dst, bi): continue
+                    if would_violate_senior_cap(n, bi, dst): continue
+                    if would_exceed_run(n, bi, dst): continue
                     cands.append(n)
                 if not cands: break
-                pick = sorted(cands, key=lambda n:(repeat_penalty(n, bi, "Gold"),
-                                                   int((schedule_df.loc[n]=="Gold").sum()),
+                pick = sorted(cands, key=lambda n:(repeat_penalty(n, bi, dst),
+                                                   int((schedule_df.loc[n]==dst).sum()),
+                                                   senior_same_year_penalty(n, bi, dst),
                                                    n))[0]
-                schedule_df.loc[pick, hdr] = "Gold"
-                log_reason(reasons, pick, hdr, "Rebalanced RG→Gold to even teams (diff ≤ 1)")
+                schedule_df.loc[pick, hdr] = dst
+                log_reason(reasons, pick, hdr, f"Rebalanced {src}→{dst} to keep diff ≤ 1")
         rebalance_gold_rg()
 
-        # Vascular intern hard check with swap if needed
+        # (Attempt) Ensure Vascular has an intern via swap if possible (no longer a hard error)
         def vascular_has_intern() -> bool:
             return any(is_intern(n) for n in team(bi,"Vascular"))
         if not vascular_has_intern():
@@ -711,7 +830,7 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
                     if not exceeds_consecutive_limit(give, bi, "Vascular") and not exceeds_consecutive_limit(take, bi, old_lbl):
                         schedule_df.loc[give, hdr] = "Vascular"
                         schedule_df.loc[take, hdr] = old_lbl
-                        log_reason(reasons, give, hdr, f"Swap to ensure Vascular has an intern (from {old_lbl})")
+                        log_reason(reasons, give, hdr, f"Swap to add Vascular intern (from {old_lbl})")
                         log_reason(reasons, take, hdr, f"Swap off Vascular to {old_lbl} (make room for intern)")
 
     # persist trackers
@@ -730,15 +849,15 @@ def polish_with_optimizer(schedule_df: pd.DataFrame, roster_df: pd.DataFrame, st
     headers = list(schedule_df.columns)
     roster = {r["Resident"]: r for _, r in normalize_roster_input(roster_df).iterrows()}
 
-    GOLD_MAX = int(constraints.get("gold_cap", 4))
-    RG_MAX   = int(constraints.get("rg_cap", 4))
-    VASC_MAX = int(constraints.get("vascular_cap", 3))
-    BREAST_MAX = 1
+    # Hard targets
+    GOLD_MIN, GOLD_MAX = 3, 4
+    RG_MIN,   RG_MAX   = 3, 4
+    VASC_MAX           = int(constraints.get("vascular_cap", 3))
+    BREAST_MAX         = 1
 
-    # penalties (we keep existing; balancing handled by constraints below)
+    # penalties (kept for repeats etc.)
     w_nf_gap      = float(constraints.get("penalty_nf_gap", 3.0))
     w_pgy5_last   = float(constraints.get("penalty_pgy5_last", 5.0))
-    w_gold_sen    = float(constraints.get("penalty_gold_senior", 3.0))
     w_repeat_svc  = float(constraints.get("penalty_consecutive_repeat", 2.0))
 
     SVC = ["Gold","Red/Green","Vascular","Breast","Chief","ICU","Floor","Nights","Elective","Pittsburgh","Vacation"]
@@ -770,35 +889,27 @@ def polish_with_optimizer(schedule_df: pd.DataFrame, roster_df: pd.DataFrame, st
     for bi, hdr in enumerate(headers):
         gold_ct = pulp.lpSum(x[(n,bi,"Gold")] for n in names)
         rg_ct   = pulp.lpSum(x[(n,bi,"Red/Green")] for n in names)
+        prob += gold_ct >= GOLD_MIN
         prob += gold_ct <= GOLD_MAX
+        prob += rg_ct   >= RG_MIN
         prob += rg_ct   <= RG_MAX
         prob += pulp.lpSum(x[(n,bi,"Vascular")] for n in names) <= VASC_MAX
         prob += pulp.lpSum(x[(n,bi,"Breast")]   for n in names) <= BREAST_MAX
-        prob += rg_ct >= 3  # RG must be 3–4
-        # Balance constraint: keep diff ≤ 1 (prevents RG=4 with Gold=2)
-        prob += rg_ct - gold_ct <= 1
-        prob += gold_ct - rg_ct <= 1
+
+        # Senior presence (HARD): Gold, RG, Vascular must each have ≥1 Senior
+        seniors = [n for n in names if role_of(n, roster)=="Senior"]
+        prob += pulp.lpSum(x[(n,bi,"Gold")]      for n in seniors) >= 1
+        prob += pulp.lpSum(x[(n,bi,"Red/Green")] for n in seniors) >= 1
+        prob += pulp.lpSum(x[(n,bi,"Vascular")]  for n in seniors) >= 1
 
         # Senior cap ≤2 per service (across services)
-        seniors = [n for n in names if role_of(n, roster)=="Senior"]
         for svc in ["Gold","Red/Green","Vascular","Breast","ICU","Floor","Nights","Pittsburgh","Elective","Vacation"]:
             prob += pulp.lpSum(x[(n,bi,svc)] for n in seniors) <= 2
 
-        # Vascular must include at least one intern
-        interns = [n for n in names if roster[n]["PGY"]=="PGY-1"]
-        if interns:
-            prob += pulp.lpSum(x[(n,bi,"Vascular")] for n in interns) >= 1
+        # (No Pitts scheduling here; PGH is pinned by greedy)
 
     # Objective: soft penalties
     obj = 0
-
-    # Penalty if Gold lacks a Senior
-    for bi, hdr in enumerate(headers):
-        seniors = [n for n in names if role_of(n, roster) == "Senior"]
-        gold_sen_count = pulp.lpSum(x[(n,bi,"Gold")] for n in seniors)
-        b_gs = pulp.LpVariable(f"miss_golds_{bi}", lowBound=0, upBound=1, cat="Binary")
-        prob += gold_sen_count + b_gs >= 1
-        obj += w_gold_sen * b_gs
 
     # Penalty: PGY-5 on nights in last block
     bi_last = len(headers)-1
@@ -806,7 +917,7 @@ def polish_with_optimizer(schedule_df: pd.DataFrame, roster_df: pd.DataFrame, st
     if pgy5s:
         obj += w_pgy5_last * pulp.lpSum(x[(n,bi_last,"Nights")] for n in pgy5s)
 
-    # Penalty: consecutive repeats (including >2 runs)
+    # Penalty: consecutive repeats (excluding Pittsburgh which has allowed 3-run)
     y = {}
     for n in names:
         for bi in range(1, len(headers)):
@@ -815,7 +926,8 @@ def polish_with_optimizer(schedule_df: pd.DataFrame, roster_df: pd.DataFrame, st
                 prob += y[(n,bi,s)] <= x[(n,bi-1,s)]
                 prob += y[(n,bi,s)] <= x[(n,bi,s)]
                 prob += y[(n,bi,s)] >= x[(n,bi-1,s)] + x[(n,bi,s)] - 1
-                obj += w_repeat_svc * y[(n,bi,s)]
+                if s != "Pittsburgh":
+                    obj += w_repeat_svc * y[(n,bi,s)]
 
     prob += obj
 
@@ -983,24 +1095,44 @@ def compute_checks(schedule_df: pd.DataFrame, dailies: dict, roster_df: pd.DataF
             add_issue("UNASSIGNED", "ERROR", hdr, f"{n} has no assignment")
 
     # Pittsburgh overlap & January (late) exclusion
-    january_year = start_date.year + 1
-    def block_has_late_january(s: date, e: date) -> bool:
-        d = s
-        while d <= e:
-            if d.year == january_year and d.month == 1 and d.day >= 16:
-                return True
-            d += timedelta(days=1)
-        return False
-
     for idx,(s,e) in enumerate(blocks):
         hdr = headers[idx]
         pgh_count = int((schedule_df[hdr]=="Pittsburgh").sum())
         if pgh_count > 1:
             add_issue("PGH_OVERLAP", "ERROR", hdr, f"{pgh_count} residents in Pittsburgh (should be ≤ 1)")
-        if block_has_late_january(s,e) and pgh_count>0:
+        if block_has_late_january(s,e,start_date) and pgh_count>0:
             add_issue("PGH_JAN_LATE", "ERROR", hdr, "Pittsburgh scheduled in late January (Jan 16–31) not allowed")
 
-    # Per-block composition / caps / senior cap and vascular-intern rules
+    # PGY restriction on Pittsburgh (if enabled)
+    if constraints.get("pg3_pittsburgh", True):
+        for hdr in headers:
+            bad = [n for n in names if schedule_df.loc[n, hdr]=="Pittsburgh" and roster_map[n]["PGY"]!="PGY-3"]
+            for n in bad:
+                add_issue("PGH_PGY_RULE", "ERROR", hdr, f"{n} ({roster_map[n]['PGY']}) on Pittsburgh (PGY-3 only)")
+
+    # Pittsburgh run length must be exactly 3 (consecutive)
+    for n in names:
+        cur_len=0; start_idx=None
+        for bi, hdr in enumerate(headers):
+            if schedule_df.loc[n, hdr] == "Pittsburgh":
+                if cur_len==0: start_idx=bi
+                cur_len+=1
+            else:
+                if cur_len>0:
+                    if cur_len != 3:
+                        add_issue("PGH_RUN_LEN", "ERROR", headers[start_idx], f"{n} has Pittsburgh run of {cur_len} blocks (must be exactly 3)")
+                    cur_len=0; start_idx=None
+        if cur_len>0 and cur_len != 3:
+            add_issue("PGH_RUN_LEN", "ERROR", headers[start_idx], f"{n} has Pittsburgh run of {cur_len} blocks (must be exactly 3)")
+
+    # HARD: All PGY-3 must have exactly 3 Pittsburgh blocks (enforced/checked)
+    for n in names:
+        if roster_map[n]["PGY"] == "PGY-3":
+            total_pgh = int((schedule_df=="Pittsburgh").loc[n].sum())
+            if total_pgh != 3:
+                add_issue("PGH_PGY3_REQUIRED", "ERROR", "(year)", f"{n} (PGY-3) has {total_pgh} Pittsburgh blocks (must be exactly 3)")
+
+    # Per-block composition / caps / senior cap and team-size hard rules
     for hdr in headers:
         bi=hdr_to_bi.get(hdr,0)
         def svc(lbl): return [n for n in names if norm_label(schedule_df.loc[n, hdr])==norm_label(lbl)]
@@ -1021,7 +1153,7 @@ def compute_checks(schedule_df: pd.DataFrame, dailies: dict, roster_df: pd.DataF
             if Counter(roles) != Counter({"Senior":1,"Junior":1,"Intern":1}):
                 add_issue("NF_COMPOSITION", "ERROR", hdr, f"Expected 1 Senior, 1 Junior, 1 Intern; got {Counter(roles)}")
 
-        # Chief eligibility
+        # Chief eligibility warnings (unchanged)
         if bi<6:
             for n in chief:
                 if roster_map[n]["PGY"]=="PGY-2":
@@ -1031,7 +1163,7 @@ def compute_checks(schedule_df: pd.DataFrame, dailies: dict, roster_df: pd.DataF
                 if roster_map[n]["PGY"]=="PGY-3":
                     add_issue("CHIEF_H2_PGY3", "WARN", hdr, f"PGY-3 Chief (fallback only): {n}")
 
-        # ICU (ERROR)
+        # ICU strict PGY requirements (ERROR)
         if bi<6:
             if not icu:
                 add_issue("ICU_H1_NOCOVER", "ERROR", hdr, "ICU not covered by PGY-2 (required)")
@@ -1056,40 +1188,46 @@ def compute_checks(schedule_df: pd.DataFrame, dailies: dict, roster_df: pd.DataF
             if senior_ct > 2:
                 add_issue("SR_CAP", "ERROR", hdr, f"{svc_name} has {senior_ct} seniors (>2)")
 
-        # Gold cap & senior presence
-        if len(gold) > int(constraints.get("gold_cap",4)):
-            add_issue("GOLD_CAP", "WARN", hdr, f"Gold has {len(gold)} (> cap)")
+        # HARD: Gold & Red/Green size must be 3–4
+        if not (3 <= len(gold) <= 4):
+            add_issue("GOLD_SIZE", "ERROR", hdr, f"Gold has {len(gold)} (must be 3–4)")
+        if not (3 <= len(rg) <= 4):
+            add_issue("RG_SIZE", "ERROR", hdr, f"Red/Green has {len(rg)} (must be 3–4)")
+
+        # HARD: Senior required on Gold, Red/Green, and Vascular
         if gold and not any(role_of(n, roster_map)=="Senior" for n in gold):
-            add_issue("GOLD_NEEDS_SENIOR", "WARN", hdr, "Gold has no Senior")
+            add_issue("GOLD_NEEDS_SENIOR", "ERROR", hdr, "Gold has no Senior")
+        if rg and not any(role_of(n, roster_map)=="Senior" for n in rg):
+            add_issue("RG_NEEDS_SENIOR", "ERROR", hdr, "Red/Green has no Senior")
+        if vas and not any(role_of(n, roster_map)=="Senior" for n in vas):
+            add_issue("VASC_NEEDS_SENIOR", "ERROR", hdr, "Vascular has no Senior")
 
-        # Red/Green size & composition + cap
-        if len(rg) < 3 or len(rg) > int(constraints.get("rg_cap",4)):
-            add_issue("RG_SIZE", "WARN", hdr, f"Red/Green has {len(rg)} (must be 3–4)")
-        need_sr = not any(role_of(n, roster_map)=="Senior" for n in rg)
-        need_jr = not any(role_of(n, roster_map)=="Junior" for n in rg)
-        need_in = not any(role_of(n, roster_map)=="Intern" for n in rg)
-        if need_sr or need_jr or need_in:
-            miss = ", ".join(x for x,flag in [("Senior",need_sr),("Junior",need_jr),("Intern",need_in)] if flag)
-            add_issue("RG_COMPOSITION", "WARN", hdr, f"RG missing: {miss}")
+        # Attempt rule: Prefer S/J/I on Gold, RG, Vascular (WARN if missing Jr or Intern)
+        def sji_warn(team_list, svcname):
+            roles = {role_of(n, roster_map) for n in team_list}
+            miss = [r for r in ["Senior","Junior","Intern"] if r not in roles]
+            # Senior absence already flagged as ERROR; only warn for Junior/Intern attempts
+            miss = [m for m in miss if m in {"Junior","Intern"}]
+            if miss:
+                add_issue("SJI_ATTEMPT", "WARN", hdr, f"{svcname} missing: {', '.join(miss)}")
+        if gold: sji_warn(gold, "Gold")
+        if rg:   sji_warn(rg, "Red/Green")
+        if vas:  sji_warn(vas, "Vascular")
 
-        # Breast eligibility & cap
-        if any(roster_map[n]["PGY"]=="PGY-1" for n in breast):
-            add_issue("BREAST_PGY1", "WARN", hdr, "PGY-1 on Breast")
-        if len(breast) > 1:
-            add_issue("BREAST_CAP", "ERROR", hdr, f"Breast has {len(breast)} (>1)")
+        # Avoid two seniors from same year on same team (WARN)
+        def warn_same_year_seniors(team_list, svcname):
+            seniors = [n for n in team_list if role_of(n, roster_map)=="Senior"]
+            if len(seniors) >= 2:
+                pgys = [roster_map[n]["PGY"] for n in seniors]
+                if len(set(pgys)) == 1:
+                    add_issue("SR_SAME_YEAR_PAIR", "WARN", hdr, f"{svcname} has two Seniors from same year ({pgys[0]})")
+        warn_same_year_seniors(gold, "Gold")
+        warn_same_year_seniors(rg, "Red/Green")
+        warn_same_year_seniors(vas, "Vascular")
 
-        # Balance warning if still imbalanced
+        # Balance warning if still imbalanced (diff > 1)
         if abs(len(rg) - len(gold)) > 1:
             add_issue("RG_GOLD_IMBALANCE", "WARN", hdr, f"Gold={len(gold)} vs Red/Green={len(rg)} (diff > 1)")
-
-        # Vascular rules (must include an intern)
-        has_intern = any(role_of(n, roster_map)=="Intern" for n in vas)
-        has_sr = any(role_of(n, roster_map)=="Senior" for n in vas)
-        has_jrint = any(role_of(n, roster_map) in {"Junior","Intern"} for n in vas)
-        if not has_intern:
-            add_issue("VASC_NEEDS_INTERN", "ERROR", hdr, "Vascular missing Intern (hard rule)")
-        if not (2 <= len(vas) <= int(constraints.get("vascular_cap",3)) and has_sr and has_jrint):
-            add_issue("VASC_RULE", "WARN", hdr, f"Expect Sr + Jr/Int, size 2–{int(constraints.get('vascular_cap',3))}; got {len(vas)}")
 
     # Night spacing (WARN)
     for n in names:
@@ -1100,19 +1238,23 @@ def compute_checks(schedule_df: pd.DataFrame, dailies: dict, roster_df: pd.DataF
                     add_issue("NF_SPACING", "WARN", hdr, f"{n} on NF < 1 block after {headers[last]}")
                 last = bi
 
-    # Consecutive >2 same rotation (ERROR)
+    # Consecutive >2 same rotation (ERROR) — exclude Pittsburgh (handled separately)
     for n in names:
         run = 1
         prev = None
         for bi, hdr in enumerate(headers):
-            cur = norm_label(schedule_df.loc[n, hdr])
-            if cur and prev == cur:
+            cur = schedule_df.loc[n, hdr]
+            if cur == "Pittsburgh":
+                run = 1; prev = None
+                continue
+            cur_norm = norm_label(cur)
+            if cur_norm and prev == cur_norm:
                 run += 1
             else:
                 run = 1
             if run >= 3:
                 add_issue("REPEAT_GT2", "ERROR", hdr, f"{n} has {run} consecutive {cur}")
-            prev = cur
+            prev = cur_norm
 
     issues_df = pd.DataFrame(issues).sort_values(["Severity","Code","Block","Details"], ignore_index=True)
     summary_issue = (issues_df.value_counts(["Severity","Code"]).rename("Count").reset_index()
@@ -1416,12 +1558,11 @@ with st.sidebar:
     ay_start=st.date_input("Start date (Block 1 begins Monday)", value=default_start)
 
     st.markdown("---"); st.markdown("### Constraints")
-    st.checkbox("Require Senior on Gold", True, key="senior_on_gold")
-    st.checkbox("Red/Green must include Sr + Jr + Intern", True, key="rg_require_sji")
-    st.checkbox("Allow a 4th resident on Red/Green", True, key="rg_allow_fourth")
-    st.checkbox("Prioritize fill: Gold → Red/Green", True, key="priority_gold_rg")
-    st.checkbox("Breast only PGY-2+", True, key="breast_pgy2plus")
-    st.checkbox("Vascular = Senior + Junior/Intern", True, key="vascular_sr_jr")
+    # Removed per instructions:
+    # - Require Senior on Gold
+    # - Red/Green must include Sr + Jr + Intern
+    # - Vascular = Senior + Junior/Intern
+    st.checkbox("Allow a 4th resident on Red/Green", True, key="rg_allow_fourth")  # kept for UI parity; hard rule enforces 3–4 regardless
 
     st.number_input("Gold team cap", min_value=1, max_value=10, value=4, key="gold_cap")
     st.number_input("Red/Green team cap", min_value=3, max_value=10, value=4, key="rg_cap")
@@ -1436,10 +1577,15 @@ with st.sidebar:
     st.checkbox("Enable Night Float (Sr+Jr+Intern every block)", True, key="nightfloat")
     st.caption("NF rules: Sr+Jr+Intern each block; ≥1-block gap preferred; avoid PGY-5 last block.")
 
+    st.markdown("**Pittsburgh rotation**")
+    st.checkbox("Enable Pittsburgh rotation", True, key="enable_pittsburgh")
+    st.checkbox("Pittsburgh = PGY-3 only", True, key="pg3_pittsburgh")
+    st.text_input("Pittsburgh block blacklist (comma-separated indices 0–12)", value="0,6,12", key="pgh_block_blacklist_txt")
+    st.caption("Pittsburgh auto-assigns **3 consecutive blocks** for **all PGY-3 residents** (capacity 1 per block), avoiding late Jan (Jan 16–31).")
+
     st.markdown("**Fairness/Soft penalties**")
     st.slider("Penalty: NF gap violations", 0.0, 10.0, 3.0, 0.5, key="penalty_nf_gap")
     st.slider("Penalty: PGY-5 on Nights (last block)", 0.0, 10.0, 5.0, 0.5, key="penalty_pgy5_last")
-    st.slider("Penalty: Gold lacks a Senior", 0.0, 10.0, 3.0, 0.5, key="penalty_gold_sen")
     st.slider("Penalty: consecutive same rotation", 0.0, 10.0, 2.0, 0.5, key="penalty_consecutive_repeat")
 
     st.markdown("**Elig. calendars JSON (per service)**")
@@ -1542,6 +1688,18 @@ with colA:
         except Exception as e:
             st.error(f"Roster problem: {e}"); st.stop()
 
+        # Parse Pittsburgh blacklist
+        try:
+            blk_txt = (st.session_state.pgh_block_blacklist_txt or "").strip()
+            blk_list = []
+            for tok in parse_csv_list(blk_txt):
+                try:
+                    blk_list.append(int(tok))
+                except Exception:
+                    pass
+        except Exception:
+            blk_list = [0,6,12]
+
         try:
             elig_json = st.session_state.eligibility_calendars_json.strip()
             eligibility_calendars = json.loads(elig_json) if elig_json else {}
@@ -1550,12 +1708,12 @@ with colA:
             eligibility_calendars = {}
 
         constraints = {
-            "senior_on_gold": st.session_state.senior_on_gold,
-            "rg_require_sji": st.session_state.rg_require_sji,
-            "rg_allow_fourth": st.session_state.rg_allow_fourth,
-            "priority_gold_rg": st.session_state.priority_gold_rg,
-            "breast_pgy2plus": st.session_state.breast_pgy2plus,
-            "vascular_sr_jr": st.session_state.vascular_sr_jr,
+            # Removed legacy booleans per instructions:
+            # "senior_on_gold": st.session_state.senior_on_gold,
+            # "rg_require_sji": st.session_state.rg_require_sji,
+            # "vascular_sr_jr": st.session_state.vascular_sr_jr,
+            "rg_allow_fourth": st.session_state.rg_allow_fourth,  # UI only; hard rule enforces 3–4
+
             "nightfloat": st.session_state.nightfloat,
 
             "gold_cap": st.session_state.gold_cap,
@@ -1566,11 +1724,14 @@ with colA:
 
             "exclude_from_call": st.session_state.exclude_from_call,
             "pg4_elective": True,
-            "pg3_pittsburgh": True,
+
+            # Pittsburgh controls
+            "enable_pittsburgh": st.session_state.enable_pittsburgh,
+            "pg3_pittsburgh": st.session_state.pg3_pittsburgh,
+            "pgh_block_blacklist": blk_list,
 
             "penalty_nf_gap": st.session_state.penalty_nf_gap,
             "penalty_pgy5_last": st.session_state.penalty_pgy5_last,
-            "penalty_gold_senior": st.session_state.penalty_gold_sen,
             "penalty_consecutive_repeat": st.session_state.penalty_consecutive_repeat,
 
             "vascular_third_cap_per_resident": st.session_state.vascular_third_cap,
@@ -1733,4 +1894,3 @@ if "dailies" in st.session_state and "schedule_df" in st.session_state:
                                file_name="ResidentSchedule_26-27_Amion.csv", mime="text/csv")
 else:
     st.info("Edit the roster and click **Generate schedule from roster** to begin.")
-
