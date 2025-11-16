@@ -1,5 +1,5 @@
 # app.py
-import io, json, re, math, random, time
+import io, json, re, math, random, time, os
 from datetime import date, timedelta
 from collections import Counter, defaultdict
 
@@ -1560,13 +1560,14 @@ st.title("Surgery Scheduler – Editable Prototype")
 # ---- Password gate (simple) ----
 def _check_password():
     import streamlit as st
-    if "APP_PASSWORD" not in st.secrets:
-        st.error("Security is enabled but APP_PASSWORD is not set in this environment.")
-        st.stop()
+    expected = st.secrets.get("APP_PASSWORD") or os.environ.get("APP_PASSWORD")
+    if expected in (None, ""):
+        st.warning("Password protection disabled – set APP_PASSWORD to re-enable.")
+        st.session_state["_authed"] = True
+        return True
     if st.session_state.get("_authed", False):
         return True
     def _on_submit():
-        expected = st.secrets["APP_PASSWORD"]
         ok = st.session_state.get("_pw_input", "") == expected
         st.session_state["_authed"] = bool(ok)
         if not ok:
