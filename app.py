@@ -1026,7 +1026,9 @@ def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_dat
     excluded_base=set(map(norm_label, constraints.get("exclude_from_call", [])))
 
     call_year=Counter()
-    issues = st.session_state.setdefault("forced_call_issues", [])
+    # Reset per-run call override log so repeated runs don't accumulate stale entries
+    issues = []
+    st.session_state["forced_call_issues"] = issues
 
     last_global_wknd = defaultdict(lambda: -999)
     def global_week_index(bi, wk): return bi*4 + wk
