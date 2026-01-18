@@ -780,8 +780,20 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
                 st.session_state["_nf_role_counts"][pick][role] += 1
                 log_reason(reasons, pick, hdr, f"Nights as {role} (role-fair; spacing respected; avoid consecutive)")
 
-        # Floor (HARD): PGY-1 only
-        assign_first([n for n in names if roster_map[n]["PGY"]=="PGY-1" and n not in locked_rows], bi, "Floor")
+        # Floor (HARD): PGY-1 only - prefer interns with MORE Vascular so those with fewer are available for Vascular
+        floor_interns = [n for n in names if roster_map[n]["PGY"]=="PGY-1"
+                         and n not in locked_rows
+                         and pd.isna(schedule_df.loc[n, hdr])
+                         and not is_unavailable(n, roster_map[n]["PGY"], "Floor", bi)
+                         and not would_exceed_run(n, bi, "Floor")]
+        if floor_interns:
+            # Prefer interns who already have MORE Vascular (negative count), so those with fewer stay available
+            pick = sorted(floor_interns, key=lambda n:(-vasc_intern_counts[n],
+                                                        int((schedule_df.loc[n]=="Floor").sum()),
+                                                        repeat_penalty(n, bi, "Floor"),
+                                                        rng.random(), n))[0]
+            schedule_df.loc[pick, hdr] = "Floor"
+            log_reason(reasons, pick, hdr, "Floor (PGY-1; prefer those with more Vascular)")
 
         # --------- Vascular baseline BEFORE RG/Gold seeding (attempt S/J/I; must include a Senior) ---------
         assign_first([n for n in names if is_senior(n) and n not in locked_rows], bi, "Vascular")  # Senior required (hard rule checked later)
