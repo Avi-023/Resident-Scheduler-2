@@ -1889,6 +1889,7 @@ if "dailies" in st.session_state and "schedule_df" in st.session_state:
                 st.session_state.dailies = new_dailies
                 st.session_state.schedule_df_effective = None
                 st.success("Applied Yearly edits.")
+                st.rerun()
         else:
             vis = view_df.reset_index().rename(columns={"index":"Resident"})
             cols = vis.columns[1:]
