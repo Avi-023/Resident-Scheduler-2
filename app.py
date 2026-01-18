@@ -1060,9 +1060,12 @@ def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_dat
     last_global_wknd = defaultdict(lambda: -999)
     def global_week_index(bi, wk): return bi*4 + wk
 
+    # Random generator for fair tiebreaking
+    call_rng = random.Random(int(constraints.get("random_seed", 0) or 0))
+
     def pick(pool, need, block_ctr, bi, wk):
         pool = [n for n in pool if block_ctr[n]<2]
-        pool.sort(key=lambda n:(call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), n))
+        pool.sort(key=lambda n:(call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
         for n in pool:
             if need == "Senior" and _role(n)=="Senior": return n
             if need == "Junior" and _role(n) in {"Junior","Senior"}: return n
