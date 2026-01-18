@@ -1560,6 +1560,61 @@ def compute_checks(schedule_df: pd.DataFrame, dailies: dict, roster_df: pd.DataF
 
     out["heat_rotations"] = rot_counts_df
     out["heat_calls"] = call_df
+
+    # Compliance checks: 4 days off per block, 3 vacation weeks, 2 personal days
+    compliance_rows = []
+    for n in names:
+        # Count vacation weeks (from dailies - 5 consecutive weekdays with "Vacation")
+        vacation_weeks = 0
+        personal_days = 0
+        days_off_by_block = {}
+
+        for block_name, daily_df in dailies.items():
+            if n not in daily_df.index:
+                continue
+            row_data = daily_df.loc[n]
+
+            # Count days off in this block (blank or empty assignments on weekdays)
+            days_off = 0
+            vacation_days_in_block = 0
+            for (weekday, dstr), val in row_data.items():
+                val_str = str(val).strip() if pd.notna(val) else ""
+                # Days off = blank/empty or Vacation on weekdays
+                if weekday not in ("Saturday", "Sunday"):
+                    if val_str == "" or val_str.lower() == "vacation":
+                        days_off += 1
+                    if val_str.lower() == "vacation":
+                        vacation_days_in_block += 1
+                # Count personal days anywhere
+                if val_str.lower() == "personal day":
+                    personal_days += 1
+
+            days_off_by_block[block_name] = days_off
+            # A vacation week is 5 consecutive vacation days (Mon-Fri)
+            if vacation_days_in_block >= 5:
+                vacation_weeks += vacation_days_in_block // 5
+
+        # Check if all blocks have at least 4 days off
+        blocks_with_4_days_off = sum(1 for d in days_off_by_block.values() if d >= 4)
+        total_blocks = len(days_off_by_block)
+        all_blocks_have_4_off = blocks_with_4_days_off == total_blocks if total_blocks > 0 else False
+
+        compliance_rows.append({
+            "Resident": n,
+            "PGY": roster_map[n]["PGY"],
+            "4+ Days Off (All Blocks)": "Yes" if all_blocks_have_4_off else f"No ({blocks_with_4_days_off}/{total_blocks})",
+            "Vacation Weeks": vacation_weeks,
+            "3 Vacation Weeks": "Yes" if vacation_weeks >= 3 else f"No ({vacation_weeks}/3)",
+            "Personal Days": personal_days,
+            "2 Personal Days": "Yes" if personal_days >= 2 else f"No ({personal_days}/2)",
+        })
+
+    compliance_df = (pd.DataFrame(compliance_rows)
+                     .assign(_ord=lambda d: d["PGY"].map(order))
+                     .sort_values(["_ord", "Resident"])
+                     .drop(columns=["_ord"]).reset_index(drop=True))
+    out["compliance"] = compliance_df
+
     return out
 
 # --------------------------
@@ -1841,8 +1896,7 @@ with st.sidebar:
     if "random_seed" not in st.session_state:
         st.session_state.random_seed = 0
 
-# Editable roster (seed)
-st.subheader("Roster (editable)")
+# Initialize default roster (display moved to Yearly tab)
 _default_roster=pd.DataFrame([
     ["Avi Robinson","PGY-5","N","Y","","","",""],
     ["Kathleen Koesarie","PGY-5","N","Y","","","",""],
@@ -1867,108 +1921,75 @@ _default_roster=pd.DataFrame([
 if "roster_table" not in st.session_state:
     st.session_state.roster_table = _default_roster.copy()
 
-roster = show_table(st.session_state.roster_table, "roster_editor", editable=True, hide_index=True, index_name_hint="Resident")
-st.session_state.roster_table = roster.copy()
+# Edit mode toggle (used across all tabs)
+edit_mode = st.toggle("Edit mode", value=True, help="ON = tables editable; OFF = preview (weekday colors only)")
 
-# Hidden: Gini fairness indicator (still computed but not displayed)
-# if "dailies" in st.session_state:
-#     call_totals = []
-#     for n in st.session_state.schedule_df.index:
-#         FSu=Sa=0
-#         for d in st.session_state.dailies.values():
-#             vals=d.loc[n].to_numpy(); FSu += (vals=="F/Su").sum(); Sa += (vals=="Sa").sum()
-#         call_totals.append(FSu+Sa)
-#     st.sidebar.markdown(f"**Call balance (Gini):** {gini(call_totals):.3f}")
+# Define generate_schedule function for use in Yearly tab
+def generate_schedule_from_roster():
+    """Generate schedule from current roster. Called from Yearly tab."""
+    try:
+        roster_raw = st.session_state.roster_table.copy()
+        roster_raw["Resident"] = roster_raw["Resident"].astype(str)
+        bad_names = roster_raw["Resident"].str.strip().str.lower().isin(["", "none", "na", "n/a"])
+        roster_raw = roster_raw[~bad_names].reset_index(drop=True)
+        roster_raw["PGY"] = roster_raw["PGY"].astype(str)
+        roster_raw["PGY"] = roster_raw["PGY"].str.replace(r"\(.*?\)", "", regex=True)
+        roster_raw["PGY"] = roster_raw["PGY"].str.upper().str.replace(r"PGY\s*([1-5])", r"PGY-\1", regex=True)
+        roster_raw["PGY"] = roster_raw["PGY"].str.replace(r"^\s*([1-5])\s*$", r"PGY-\1", regex=True)
+        roster_norm = normalize_roster_input(roster_raw)
+        validate_roster(roster_norm)
+    except Exception as e:
+        st.error(f"Roster problem: {e}")
+        return False
 
-st.markdown("---")
-colA, colB, colC = st.columns([1,1,1])
-with colA:
-    if st.button("Generate schedule from roster"):
-        try:
-            roster_raw = st.session_state.roster_table.copy()
-            roster_raw["Resident"] = roster_raw["Resident"].astype(str)
-            bad_names = roster_raw["Resident"].str.strip().str.lower().isin(["", "none", "na", "n/a"])
-            roster_raw = roster_raw[~bad_names].reset_index(drop=True)
-            roster_raw["PGY"] = roster_raw["PGY"].astype(str)
-            roster_raw["PGY"] = roster_raw["PGY"].str.replace(r"\(.*?\)", "", regex=True)
-            roster_raw["PGY"] = roster_raw["PGY"].str.upper().str.replace(r"PGY\s*([1-5])", r"PGY-\1", regex=True)
-            roster_raw["PGY"] = roster_raw["PGY"].str.replace(r"^\s*([1-5])\s*$", r"PGY-\1", regex=True)
-            roster_norm = normalize_roster_input(roster_raw)
-            validate_roster(roster_norm)
-        except Exception as e:
-            st.error(f"Roster problem: {e}"); st.stop()
+    # Parse Pittsburgh blacklist
+    try:
+        blk_txt = (st.session_state.pgh_block_blacklist_txt or "").strip()
+        blk_list = []
+        for tok in parse_csv_list(blk_txt):
+            try:
+                blk_list.append(int(tok))
+            except Exception:
+                pass
+    except Exception:
+        blk_list = []
 
-        # Parse Pittsburgh blacklist
-        try:
-            blk_txt = (st.session_state.pgh_block_blacklist_txt or "").strip()
-            blk_list = []
-            for tok in parse_csv_list(blk_txt):
-                try:
-                    blk_list.append(int(tok))
-                except Exception:
-                    pass
-        except Exception:
-            blk_list = []
+    try:
+        elig_json = st.session_state.eligibility_calendars_json.strip()
+        eligibility_calendars = json.loads(elig_json) if elig_json else {}
+    except Exception as e:
+        st.warning(f"Eligibility calendars JSON invalid: {e}")
+        eligibility_calendars = {}
 
-        try:
-            elig_json = st.session_state.eligibility_calendars_json.strip()
-            eligibility_calendars = json.loads(elig_json) if elig_json else {}
-        except Exception as e:
-            st.warning(f"Eligibility calendars JSON invalid: {e}")
-            eligibility_calendars = {}
+    constraints = {
+        "gold_cap": st.session_state.gold_cap,
+        "rg_cap": st.session_state.rg_cap,
+        "vascular_cap": st.session_state.vascular_cap,
+        "service_minima": {"Gold": st.session_state.gold_min, "Red/Green": st.session_state.rg_min, "ICU": 1},
+        "exclude_from_call": st.session_state.exclude_from_call,
+        "enable_pittsburgh": True,
+        "pg3_pittsburgh": True,
+        "pgh_block_blacklist": blk_list,
+        "eligibility_calendars": eligibility_calendars,
+        "random_seed": st.session_state.random_seed,
+    }
+    st.session_state.roster_df = roster_norm.copy()
+    base_fixed = st.session_state.get("schedule_df", None)
 
-        constraints = {
-            "gold_cap": st.session_state.gold_cap,
-            "rg_cap": st.session_state.rg_cap,
-            "vascular_cap": st.session_state.vascular_cap,
+    yearly = auto_generate_yearly(roster_norm.copy(), ay_start, constraints, base_fixed=base_fixed)
+    if st.session_state.use_optimizer:
+        yearly = polish_with_optimizer(yearly, roster_norm.copy(), ay_start, constraints, time_limit_s=st.session_state.opt_time_limit)
 
-            "service_minima": {"Gold": st.session_state.gold_min, "Red/Green": st.session_state.rg_min, "ICU": 1},
+    dailies = build_dailies_from_yearly(yearly, ay_start)
+    if st.session_state.auto_call:
+        auto_assign_weekend_call(dailies, yearly, ay_start, constraints, roster_norm)
 
-            "exclude_from_call": st.session_state.exclude_from_call,
-
-            # Pittsburgh: always enabled, always PGY-3 only
-            "enable_pittsburgh": True,
-            "pg3_pittsburgh": True,
-            "pgh_block_blacklist": blk_list,
-
-            "eligibility_calendars": eligibility_calendars,
-
-            "random_seed": st.session_state.random_seed,
-        }
-        st.session_state.roster_df = roster_norm.copy()
-        base_fixed = st.session_state.get("schedule_df", None)
-
-        yearly = auto_generate_yearly(roster_norm.copy(), ay_start, constraints, base_fixed=base_fixed)
-        if st.session_state.use_optimizer:
-            yearly = polish_with_optimizer(yearly, roster_norm.copy(), ay_start, constraints, time_limit_s=st.session_state.opt_time_limit)
-
-        dailies = build_dailies_from_yearly(yearly, ay_start)
-        if st.session_state.auto_call:
-            auto_assign_weekend_call(dailies, yearly, ay_start, constraints, roster_norm)
-
-        st.session_state.schedule_df = yearly
-        st.session_state.dailies = dailies
-        st.session_state.constraints = constraints
-        st.session_state.schedule_df_effective = None
-        try:
-            st.toast("Generated. See tabs below.")
-        except Exception:
-            st.success("Generated. See tabs below.")
-with colB:
-    edit_mode = st.toggle("Edit mode", value=True, help="ON = tables editable; OFF = preview (weekday colors only)")
-with colC:
-    if st.button("💾 Save scenario"):
-        sc = st.session_state.get("scenarios", {})
-        sc = {} if sc is None else dict(sc)
-        name = st.session_state.scenario_name.strip() or f"Scenario {len(sc)+1}"
-        sc[name] = {
-            "schedule": st.session_state.get("schedule_df", pd.DataFrame()).copy(),
-            "dailies": st.session_state.get("dailies", {}).copy(),
-            "constraints": st.session_state.get("constraints", {}).copy(),
-            "roster": st.session_state.get("roster_df", pd.DataFrame()).copy(),
-        }
-        st.session_state.scenarios = sc
-        st.success(f"Saved: {name}")
+    st.session_state.schedule_df = yearly
+    st.session_state.dailies = dailies
+    st.session_state.constraints = constraints
+    st.session_state.schedule_df_effective = None
+    st.rerun()
+    return True
 
 # Utility: get a valid Yearly for checks/export
 def get_effective_yearly_for_checks():
@@ -1982,16 +2003,30 @@ def get_effective_yearly_for_checks():
         return effective_yearly_from_dailies(dailies, ay_start, idx_order)
     return None
 
-if "dailies" in st.session_state and "schedule_df" in st.session_state:
-    schedule_df = st.session_state.schedule_df
-    dailies     = st.session_state.dailies
-    constraints = st.session_state.constraints
-    roster_df_ss= st.session_state.get("roster_df", roster)
+# Create tabs (always visible)
+tabs = st.tabs(["Yearly (editable)","Daily Blocks (editable)","Checks","Export"])
 
-    tabs = st.tabs(["Yearly (editable)","Daily Blocks (editable)","Checks","Export"])
+# Get schedule/dailies if they exist
+schedule_df = st.session_state.get("schedule_df", None)
+dailies = st.session_state.get("dailies", None)
+constraints = st.session_state.get("constraints", {})
+roster_df_ss = st.session_state.get("roster_df", st.session_state.roster_table)
+has_schedule = schedule_df is not None and not schedule_df.empty
 
-    # Yearly
-    with tabs[0]:
+# Yearly tab
+with tabs[0]:
+    # Roster section (always visible in Yearly tab)
+    with st.expander("Roster (editable)", expanded=not has_schedule):
+        roster = show_table(st.session_state.roster_table, "roster_editor", editable=True, hide_index=True, index_name_hint="Resident")
+        st.session_state.roster_table = roster.copy()
+
+        st.checkbox("Auto-assign weekend call after edits", True, key="auto_call")
+
+        if st.button("Generate schedule from roster"):
+            generate_schedule_from_roster()
+
+    # Show schedule if it exists
+    if has_schedule:
         st.markdown("#### Yearly Schedule")
         target = st.selectbox("Jump to resident", ["(all)"] + list(schedule_df.index), index=0, key="jump_resident")
         view_df = schedule_df if target == "(all)" else schedule_df.loc[[target]]
@@ -2021,9 +2056,12 @@ if "dailies" in st.session_state and "schedule_df" in st.session_state:
             cols = vis.columns[1:]
             st.dataframe(vis.style.applymap(style_each_cell, subset=cols),
                          use_container_width=True, hide_index=True)
+    else:
+        st.info("No schedule yet. Edit the roster above and click 'Generate schedule from roster' to create one.")
 
-    # Daily
-    with tabs[1]:
+# Daily tab
+with tabs[1]:
+    if dailies:
         st.markdown("#### Daily block tabs (Weekends uncolored; Sa / F/Su text only)")
         new_dailies={}
         for name,df in dailies.items():
@@ -2043,134 +2081,141 @@ if "dailies" in st.session_state and "schedule_df" in st.session_state:
             eff_yearly = effective_yearly_from_dailies(new_dailies, ay_start, list(schedule_df.index))
             st.session_state.schedule_df_effective = eff_yearly
             st.success("Applied Daily edits and derived effective Yearly.")
+    else:
+        st.info("No schedule available yet. Generate a schedule in the Yearly tab first.")
 
-    # Checks
-    with tabs[2]:
-        st.markdown("#### Checks & Balance Tables")
-        base_yearly = st.session_state.get("schedule_df_effective", None) or get_effective_yearly_for_checks()
-        if base_yearly is None or base_yearly.empty:
-            st.info("No schedule available yet. Generate a schedule first.")
+# Checks tab
+with tabs[2]:
+    st.markdown("#### Checks & Balance Tables")
+    base_yearly = st.session_state.get("schedule_df_effective", None) or get_effective_yearly_for_checks()
+    if base_yearly is None or base_yearly.empty:
+        st.info("No schedule available yet. Generate a schedule first.")
+    else:
+        checks = compute_checks(base_yearly, st.session_state.get("dailies", {}), roster_df_ss, constraints, ay_start)
+        c1,c2,c3 = st.columns([1.1,1.25,1.25])
+        with c1:
+            st.markdown("**Summary (Severity × Code)**")
+            st.dataframe(checks["summary"], use_container_width=True, hide_index=True)
+        with c2:
+            st.markdown("**Per-block coverage**")
+            st.dataframe(checks["coverage"], use_container_width=True, hide_index=True)
+        with c3:
+            st.markdown("**Call-load by resident**")
+            st.dataframe(checks["call"], use_container_width=True, hide_index=True)
+
+        # Compliance checks (4 days off, vacation weeks, personal days)
+        st.markdown("**Compliance Checks (Days Off / Vacation / Personal Days)**")
+        if "compliance" in checks and not checks["compliance"].empty:
+            st.dataframe(checks["compliance"], use_container_width=True, hide_index=True)
         else:
-            checks = compute_checks(base_yearly, st.session_state.dailies, roster_df_ss, constraints, ay_start)
-            c1,c2,c3 = st.columns([1.1,1.25,1.25])
-            with c1:
-                st.markdown("**Summary (Severity × Code)**")
-                st.dataframe(checks["summary"], use_container_width=True, hide_index=True)
-            with c2:
-                st.markdown("**Per-block coverage**")
-                st.dataframe(checks["coverage"], use_container_width=True, hide_index=True)
-            with c3:
-                st.markdown("**Call-load by resident**")
-                st.dataframe(checks["call"], use_container_width=True, hide_index=True)
+            st.info("No compliance data available.")
 
-            st.markdown("**Issues (detailed)**"); st.dataframe(checks["issues"], use_container_width=True, hide_index=True)
-            st.markdown("**Per-resident rotation counts (PGY-sorted)**"); st.dataframe(checks["rot_counts"], use_container_width=True, hide_index=True)
-            st.markdown("**Per-PGY coverage per block**"); st.dataframe(checks["pgy_coverage"], use_container_width=True, hide_index=True)
-            st.markdown("**Special blocks per resident**"); st.dataframe(checks["special_counts"], use_container_width=True, hide_index=True)
-            st.markdown("**Service totals across the year**"); st.dataframe(checks["svc_variance"], use_container_width=True, hide_index=True)
-            if "reasons" in checks and not checks["reasons"].empty:
-                st.markdown("**Why these assignments?**"); st.dataframe(checks["reasons"], use_container_width=True, hide_index=True)
-            if "call_overrides" in checks:
-                st.markdown("**Weekend call overrides (forced for coverage)**")
-                st.dataframe(checks["call_overrides"], use_container_width=True, hide_index=True)
-            if "nf_overrides" in checks:
-                st.markdown("**Night Float overrides & warnings**")
-                st.dataframe(checks["nf_overrides"], use_container_width=True, hide_index=True)
+        st.markdown("**Issues (detailed)**"); st.dataframe(checks["issues"], use_container_width=True, hide_index=True)
+        st.markdown("**Per-resident rotation counts (PGY-sorted)**"); st.dataframe(checks["rot_counts"], use_container_width=True, hide_index=True)
+        st.markdown("**Per-PGY coverage per block**"); st.dataframe(checks["pgy_coverage"], use_container_width=True, hide_index=True)
+        st.markdown("**Special blocks per resident**"); st.dataframe(checks["special_counts"], use_container_width=True, hide_index=True)
+        st.markdown("**Service totals across the year**"); st.dataframe(checks["svc_variance"], use_container_width=True, hide_index=True)
+        if "reasons" in checks and not checks["reasons"].empty:
+            st.markdown("**Why these assignments?**"); st.dataframe(checks["reasons"], use_container_width=True, hide_index=True)
+        if "call_overrides" in checks:
+            st.markdown("**Weekend call overrides (forced for coverage)**")
+            st.dataframe(checks["call_overrides"], use_container_width=True, hide_index=True)
+        if "nf_overrides" in checks:
+            st.markdown("**Night Float overrides & warnings**")
+            st.dataframe(checks["nf_overrides"], use_container_width=True, hide_index=True)
 
-            # Fairness Charts
-            st.markdown("---")
-            st.markdown("#### Fairness Charts")
-            st.caption("All charts sorted by PGY level (PGY-5 first, then PGY-4, PGY-3, PGY-2, PGY-1).")
+        # Fairness Charts
+        st.markdown("---")
+        st.markdown("#### Fairness Charts")
+        st.caption("All charts sorted by PGY level (PGY-5 first, then PGY-4, PGY-3, PGY-2, PGY-1).")
 
-            # PGY sort order for all charts
-            pgy_order = {"PGY-5": 0, "PGY-4": 1, "PGY-3": 2, "PGY-2": 3, "PGY-1": 4}
+        # PGY sort order for all charts
+        pgy_order = {"PGY-5": 0, "PGY-4": 1, "PGY-3": 2, "PGY-2": 3, "PGY-1": 4}
 
-            # Helper to get sorted resident order
-            def get_resident_order(df):
-                df = df.copy()
-                df["_pgy_ord"] = df["PGY"].map(pgy_order)
-                df_sorted = df.sort_values(["_pgy_ord", "Resident"])
-                return df_sorted["Resident"].tolist()
+        # Helper to get sorted resident order
+        def get_resident_order(df):
+            df = df.copy()
+            df["_pgy_ord"] = df["PGY"].map(pgy_order)
+            df_sorted = df.sort_values(["_pgy_ord", "Resident"])
+            return df_sorted["Resident"].tolist()
 
-            # Weekend Call Load Chart (by type)
-            st.markdown("**Weekend Call Load by Resident (F/Su vs Sa)**")
-            call_data = checks["call"].copy()
-            resident_order = get_resident_order(call_data)
-            call_melted = call_data.melt(id_vars=["Resident", "PGY"], value_vars=["F/Su", "Sa"], var_name="Call Type", value_name="Count")
-            call_chart = alt.Chart(call_melted).mark_bar().encode(
+        # Weekend Call Load Chart (by type)
+        st.markdown("**Weekend Call Load by Resident (F/Su vs Sa)**")
+        call_data = checks["call"].copy()
+        resident_order = get_resident_order(call_data)
+        call_melted = call_data.melt(id_vars=["Resident", "PGY"], value_vars=["F/Su", "Sa"], var_name="Call Type", value_name="Count")
+        call_chart = alt.Chart(call_melted).mark_bar().encode(
+            x=alt.X("Resident:N", sort=resident_order, title="Resident"),
+            y=alt.Y("Count:Q", title="Count"),
+            color=alt.Color("Call Type:N"),
+            xOffset="Call Type:N"
+        ).properties(height=300)
+        st.altair_chart(call_chart, use_container_width=True)
+
+        # Weekend Call Load Total Chart
+        st.markdown("**Weekend Call Load Total by Resident**")
+        call_total_chart = alt.Chart(call_data).mark_bar().encode(
+            x=alt.X("Resident:N", sort=resident_order, title="Resident"),
+            y=alt.Y("Total:Q", title="Total Calls")
+        ).properties(height=250)
+        st.altair_chart(call_total_chart, use_container_width=True)
+
+        # Special Blocks Chart
+        st.markdown("**Special Blocks by Resident**")
+        special_data = checks["special_counts"].copy()
+        resident_order = get_resident_order(special_data)
+        special_melted = special_data.melt(id_vars=["Resident", "PGY"], value_vars=["Night Float blocks", "Pittsburgh blocks", "Elective blocks"], var_name="Block Type", value_name="Count")
+        special_chart = alt.Chart(special_melted).mark_bar().encode(
+            x=alt.X("Resident:N", sort=resident_order, title="Resident"),
+            y=alt.Y("Count:Q", title="Count"),
+            color=alt.Color("Block Type:N"),
+            xOffset="Block Type:N"
+        ).properties(height=300)
+        st.altair_chart(special_chart, use_container_width=True)
+
+        # Rotation Distribution Chart
+        st.markdown("**Rotation Distribution by Resident (All Rotations)**")
+        rot_data = checks["rot_counts"].copy()
+        rot_cols = [c for c in rot_data.columns if c not in ["Resident", "PGY"]]
+        resident_order = get_resident_order(rot_data)
+        rot_melted = rot_data.melt(id_vars=["Resident", "PGY"], value_vars=rot_cols, var_name="Rotation", value_name="Count")
+        rot_chart = alt.Chart(rot_melted).mark_bar().encode(
+            x=alt.X("Resident:N", sort=resident_order, title="Resident"),
+            y=alt.Y("Count:Q", title="Count"),
+            color=alt.Color("Rotation:N"),
+            xOffset="Rotation:N"
+        ).properties(height=400)
+        st.altair_chart(rot_chart, use_container_width=True)
+
+        # Individual Rotation Charts
+        st.markdown("---")
+        st.markdown("#### Individual Rotation Comparisons")
+        st.caption("Each chart shows how many blocks each resident has for that rotation (sorted by PGY).")
+
+        # Create individual bar chart for each rotation (sorted by PGY)
+        for rotation in rot_cols:
+            st.markdown(f"**{rotation}**")
+            single_chart = alt.Chart(rot_data).mark_bar().encode(
                 x=alt.X("Resident:N", sort=resident_order, title="Resident"),
-                y=alt.Y("Count:Q", title="Count"),
-                color=alt.Color("Call Type:N"),
-                xOffset="Call Type:N"
-            ).properties(height=300)
-            st.altair_chart(call_chart, use_container_width=True)
-
-            # Weekend Call Load Total Chart
-            st.markdown("**Weekend Call Load Total by Resident**")
-            call_total_chart = alt.Chart(call_data).mark_bar().encode(
-                x=alt.X("Resident:N", sort=resident_order, title="Resident"),
-                y=alt.Y("Total:Q", title="Total Calls")
+                y=alt.Y(f"{rotation}:Q", title="Blocks")
             ).properties(height=250)
-            st.altair_chart(call_total_chart, use_container_width=True)
+            st.altair_chart(single_chart, use_container_width=True)
 
-            # Special Blocks Chart
-            st.markdown("**Special Blocks by Resident**")
-            special_data = checks["special_counts"].copy()
-            resident_order = get_resident_order(special_data)
-            special_melted = special_data.melt(id_vars=["Resident", "PGY"], value_vars=["Night Float blocks", "Pittsburgh blocks", "Elective blocks"], var_name="Block Type", value_name="Count")
-            special_chart = alt.Chart(special_melted).mark_bar().encode(
-                x=alt.X("Resident:N", sort=resident_order, title="Resident"),
-                y=alt.Y("Count:Q", title="Count"),
-                color=alt.Color("Block Type:N"),
-                xOffset="Block Type:N"
-            ).properties(height=300)
-            st.altair_chart(special_chart, use_container_width=True)
+# Export tab
+with tabs[3]:
+    base_yearly = st.session_state.get("schedule_df_effective", None) or get_effective_yearly_for_checks()
+    if base_yearly is None or base_yearly.empty:
+        st.info("No schedule available to export yet.")
+    else:
+        lint = lint_amion(st.session_state.get("dailies", {}))
+        if not lint.empty:
+            st.markdown("**Amion CSV Lint**"); st.dataframe(lint, use_container_width=True, hide_index=True)
 
-            # Rotation Distribution Chart
-            st.markdown("**Rotation Distribution by Resident (All Rotations)**")
-            rot_data = checks["rot_counts"].copy()
-            rot_cols = [c for c in rot_data.columns if c not in ["Resident", "PGY"]]
-            resident_order = get_resident_order(rot_data)
-            rot_melted = rot_data.melt(id_vars=["Resident", "PGY"], value_vars=rot_cols, var_name="Rotation", value_name="Count")
-            rot_chart = alt.Chart(rot_melted).mark_bar().encode(
-                x=alt.X("Resident:N", sort=resident_order, title="Resident"),
-                y=alt.Y("Count:Q", title="Count"),
-                color=alt.Color("Rotation:N"),
-                xOffset="Rotation:N"
-            ).properties(height=400)
-            st.altair_chart(rot_chart, use_container_width=True)
-
-            # Individual Rotation Charts
-            st.markdown("---")
-            st.markdown("#### Individual Rotation Comparisons")
-            st.caption("Each chart shows how many blocks each resident has for that rotation (sorted by PGY).")
-
-            # Create individual bar chart for each rotation (sorted by PGY)
-            for rotation in rot_cols:
-                st.markdown(f"**{rotation}**")
-                single_chart = alt.Chart(rot_data).mark_bar().encode(
-                    x=alt.X("Resident:N", sort=resident_order, title="Resident"),
-                    y=alt.Y(f"{rotation}:Q", title="Blocks")
-                ).properties(height=250)
-                st.altair_chart(single_chart, use_container_width=True)
-
-    # Export
-    with tabs[3]:
-        base_yearly = st.session_state.get("schedule_df_effective", None) or get_effective_yearly_for_checks()
-        if base_yearly is None or base_yearly.empty:
-            st.info("No schedule available to export yet.")
-        else:
-            lint = lint_amion(st.session_state.dailies)
-            if not lint.empty:
-                st.markdown("**Amion CSV Lint**"); st.dataframe(lint, use_container_width=True, hide_index=True)
-
-            checks_now = compute_checks(base_yearly, st.session_state.dailies, roster_df_ss, constraints, ay_start)
-            xlsx_bytes = to_excel(base_yearly, st.session_state.dailies, checks_now)
-            st.download_button("⬇️ Download Excel (.xlsx)", data=xlsx_bytes,
-                               file_name="ResidentSchedule_26-27_Editable.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            csv_bytes = to_amion_csv(st.session_state.dailies)
-            st.download_button("⬇️ Download Amion-style CSV (.csv)", data=csv_bytes,
-                               file_name="ResidentSchedule_26-27_Amion.csv", mime="text/csv")
-else:
-    st.info("Edit the roster and click **Generate schedule from roster** to begin.")
+        checks_now = compute_checks(base_yearly, st.session_state.get("dailies", {}), roster_df_ss, constraints, ay_start)
+        xlsx_bytes = to_excel(base_yearly, st.session_state.get("dailies", {}), checks_now)
+        st.download_button("⬇️ Download Excel (.xlsx)", data=xlsx_bytes,
+                           file_name="ResidentSchedule_26-27_Editable.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        csv_bytes = to_amion_csv(st.session_state.get("dailies", {}))
+        st.download_button("⬇️ Download Amion-style CSV (.csv)", data=csv_bytes,
+                           file_name="ResidentSchedule_26-27_Amion.csv", mime="text/csv")
