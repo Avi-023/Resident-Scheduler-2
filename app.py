@@ -516,6 +516,7 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
                 counts[n],
                 repeat_penalty(n, bi, label),
                 senior_same_year_penalty(n, bi, label),
+                rng.random(),  # Random tiebreaker for fairness
                 n
             )
         )[0]
