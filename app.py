@@ -423,9 +423,6 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
     PG3_ONLY_PGH          = bool(constraints.get("pg3_pittsburgh", True))
     PGH_BLOCK_BLACKLIST   = set(int(x) for x in constraints.get("pgh_block_blacklist", []))
 
-    # Vascular 3rd-member per-resident cap
-    vasc_third_cap = int(constraints.get("vascular_third_cap_per_resident", 1))
-    vasc_third_used = Counter()
     vasc_junior_counts = Counter()  # track PGY-2/3 used as vascular juniors
 
     # Night float tracking
@@ -1631,41 +1628,23 @@ with st.sidebar:
     ay_start=st.date_input("Start date (Block 1 begins Monday)", value=default_start)
 
     st.markdown("---"); st.markdown("### Constraints")
-    # Removed per instructions:
-    # - Require Senior on Gold
-    # - Red/Green must include Sr + Jr + Intern
-    # - Vascular = Senior + Junior/Intern
-    st.checkbox("Allow a 4th resident on Red/Green", True, key="rg_allow_fourth")  # UI parity; hard rule enforces 3–4 regardless
 
-    st.number_input("Gold team cap", min_value=1, max_value=10, value=4, key="gold_cap")
+    st.markdown("**Team size caps**")
+    st.number_input("Gold team cap", min_value=3, max_value=10, value=4, key="gold_cap")
     st.number_input("Red/Green team cap", min_value=3, max_value=10, value=4, key="rg_cap")
     st.number_input("Vascular team cap", min_value=2, max_value=5, value=3, key="vascular_cap")
 
     st.markdown("**Service minima (per block)**")
     gold_min = st.number_input("Gold min", 0, 6, 3, key="gold_min")
     rg_min   = st.number_input("Red/Green min", 0, 6, 3, key="rg_min")
-    icu_min  = st.number_input("ICU min", 0, 2, 1, key="icu_min")
-
-    st.markdown("**Night Float**")
-    st.checkbox("Enable Night Float (Sr+Jr+Intern every block)", True, key="nightfloat")
-    st.caption("NF rules: Sr+Jr+Intern each block; ≥1-block gap preferred; avoid PGY-5 last block.")
 
     st.markdown("**Pittsburgh rotation**")
-    st.checkbox("Enable Pittsburgh rotation", True, key="enable_pittsburgh")
-    st.checkbox("Pittsburgh = PGY-3 only", True, key="pg3_pittsburgh")
     st.text_input("Pittsburgh block blacklist (comma-separated indices 0–12)", value="", key="pgh_block_blacklist_txt")
-    st.caption("Planner assigns **3 consecutive blocks** for **all PGY-3 residents** (capacity 1 per block), avoiding **late Jan (Jan 16–31)**. If no solution with your blacklist, it will retry **ignoring** it.")
-
-    st.markdown("**Fairness/Soft penalties**")
-    st.slider("Penalty: NF gap violations", 0.0, 10.0, 3.0, 0.5, key="penalty_nf_gap")
-    st.slider("Penalty: PGY-5 on Nights (last block)", 0.0, 10.0, 5.0, 0.5, key="penalty_pgy5_last")
-    st.slider("Penalty: consecutive same rotation", 0.0, 10.0, 2.0, 0.5, key="penalty_consecutive_repeat")
+    st.caption("Planner assigns **3 consecutive blocks** for **all PGY-3 residents** (capacity 1 per block), avoiding **late Jan (Jan 16–31)**.")
 
     st.markdown("**Elig. calendars JSON (per service)**")
     st.text_area("Example: {\"Vascular\": {\"PGY-1\": [0,1], \"names\": {\"Jane Doe\": [3]}}}",
                  value="", key="eligibility_calendars_json")
-
-    st.number_input("Max times a resident can be the 3rd on Vascular", 0, 5, 1, key="vascular_third_cap")
 
     st.markdown("**Weekend Call – Exclude these rotations**")
     st.multiselect(
@@ -1781,33 +1760,18 @@ with colA:
             eligibility_calendars = {}
 
         constraints = {
-            # Removed legacy booleans per instructions:
-            # "senior_on_gold": st.session_state.senior_on_gold,
-            # "rg_require_sji": st.session_state.rg_require_sji,
-            # "vascular_sr_jr": st.session_state.vascular_sr_jr,
-            "rg_allow_fourth": st.session_state.rg_allow_fourth,  # UI only; hard rule enforces 3–4
-
-            "nightfloat": st.session_state.nightfloat,
-
             "gold_cap": st.session_state.gold_cap,
             "rg_cap": st.session_state.rg_cap,
             "vascular_cap": st.session_state.vascular_cap,
 
-            "service_minima": {"Gold":st.session_state.gold_min, "Red/Green":st.session_state.rg_min, "ICU":st.session_state.icu_min},
+            "service_minima": {"Gold": st.session_state.gold_min, "Red/Green": st.session_state.rg_min, "ICU": 1},
 
             "exclude_from_call": st.session_state.exclude_from_call,
-            "pg4_elective": True,
 
-            # Pittsburgh controls
-            "enable_pittsburgh": st.session_state.enable_pittsburgh,
-            "pg3_pittsburgh": st.session_state.pg3_pittsburgh,
+            # Pittsburgh: always enabled, always PGY-3 only
+            "enable_pittsburgh": True,
+            "pg3_pittsburgh": True,
             "pgh_block_blacklist": blk_list,
-
-            "penalty_nf_gap": st.session_state.penalty_nf_gap,
-            "penalty_pgy5_last": st.session_state.penalty_pgy5_last,
-            "penalty_consecutive_repeat": st.session_state.penalty_consecutive_repeat,
-
-            "vascular_third_cap_per_resident": st.session_state.vascular_third_cap,
 
             "eligibility_calendars": eligibility_calendars,
 
