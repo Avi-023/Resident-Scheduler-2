@@ -1933,11 +1933,22 @@ if "dailies" in st.session_state and "schedule_df" in st.session_state:
             st.bar_chart(special_chart_data, use_container_width=True)
 
             # Rotation Distribution Chart
-            st.markdown("**Rotation Distribution by Resident**")
+            st.markdown("**Rotation Distribution by Resident (All Rotations)**")
             rot_data = checks["rot_counts"].copy()
             rot_cols = [c for c in rot_data.columns if c not in ["Resident", "PGY"]]
             rot_chart_data = rot_data.set_index("Resident")[rot_cols].sort_index()
             st.bar_chart(rot_chart_data, use_container_width=True)
+
+            # Individual Rotation Charts
+            st.markdown("---")
+            st.markdown("#### Individual Rotation Comparisons")
+            st.caption("Each chart shows how many blocks each resident has for that rotation.")
+
+            # Create individual bar chart for each rotation
+            for rotation in rot_cols:
+                st.markdown(f"**{rotation}**")
+                single_rot_data = rot_data.set_index("Resident")[[rotation]].sort_index()
+                st.bar_chart(single_rot_data, use_container_width=True)
 
     # Export
     with tabs[3]:
