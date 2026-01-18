@@ -1967,8 +1967,8 @@ if "dailies" in st.session_state and "schedule_df" in st.session_state:
                 df_sorted = df.sort_values(["_pgy_ord", "Resident"])
                 return df_sorted["Resident"].tolist()
 
-            # Weekend Call Load Chart
-            st.markdown("**Weekend Call Load by Resident**")
+            # Weekend Call Load Chart (by type)
+            st.markdown("**Weekend Call Load by Resident (F/Su vs Sa)**")
             call_data = checks["call"].copy()
             resident_order = get_resident_order(call_data)
             call_melted = call_data.melt(id_vars=["Resident", "PGY"], value_vars=["F/Su", "Sa"], var_name="Call Type", value_name="Count")
@@ -1979,6 +1979,14 @@ if "dailies" in st.session_state and "schedule_df" in st.session_state:
                 xOffset="Call Type:N"
             ).properties(height=300)
             st.altair_chart(call_chart, use_container_width=True)
+
+            # Weekend Call Load Total Chart
+            st.markdown("**Weekend Call Load Total by Resident**")
+            call_total_chart = alt.Chart(call_data).mark_bar().encode(
+                x=alt.X("Resident:N", sort=resident_order, title="Resident"),
+                y=alt.Y("Total:Q", title="Total Calls")
+            ).properties(height=250)
+            st.altair_chart(call_total_chart, use_container_width=True)
 
             # Special Blocks Chart
             st.markdown("**Special Blocks by Resident**")
