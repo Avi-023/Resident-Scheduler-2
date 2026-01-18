@@ -1105,6 +1105,9 @@ def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_dat
     call_year=Counter()
     # Track calls separately by role for fairer distribution within each group
     call_by_role = {"Senior": Counter(), "Junior": Counter(), "Intern": Counter()}
+    # Track F/Su and Sa calls separately for even distribution of each type
+    fsu_calls = Counter()  # F/Su calls per resident
+    sa_calls = Counter()   # Sa calls per resident
     issues = st.session_state.setdefault("forced_call_issues", [])
 
     last_global_wknd = defaultdict(lambda: -999)
@@ -1113,28 +1116,28 @@ def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_dat
     # Random generator for fair tiebreaking
     call_rng = random.Random(int(constraints.get("random_seed", 0) or 0))
 
-    def pick(pool, need, block_ctr, bi, wk):
+    def pick(pool, need, block_ctr, bi, wk, call_type_counter):
         pool = [n for n in pool if block_ctr[n]<2]
 
         # For Junior slot, strongly prefer actual juniors (PGY-2/3) for even distribution
         if need == "Junior":
-            # First try to pick from actual juniors only, sorted by their junior-specific call count
+            # First try to pick from actual juniors only, sorted by their call counts
             junior_pool = [n for n in pool if _role(n) == "Junior"]
             if junior_pool:
-                junior_pool.sort(key=lambda n:(call_by_role["Junior"][n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                junior_pool.sort(key=lambda n:(call_type_counter[n], call_by_role["Junior"][n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
                 return junior_pool[0]
             # Fall back to seniors if no juniors available
             senior_pool = [n for n in pool if _role(n) == "Senior"]
             if senior_pool:
-                senior_pool.sort(key=lambda n:(call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                senior_pool.sort(key=lambda n:(call_type_counter[n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
                 return senior_pool[0]
             return None
 
-        # For Senior slot, pick from seniors sorted by their senior-specific call count
+        # For Senior slot, pick from seniors sorted by their call counts
         if need == "Senior":
             senior_pool = [n for n in pool if _role(n) == "Senior"]
             if senior_pool:
-                senior_pool.sort(key=lambda n:(call_by_role["Senior"][n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                senior_pool.sort(key=lambda n:(call_type_counter[n], call_by_role["Senior"][n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
                 return senior_pool[0]
             return None
 
@@ -1142,13 +1145,13 @@ def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_dat
         if need == "Intern":
             intern_pool = [n for n in pool if _role(n) == "Intern"]
             if intern_pool:
-                intern_pool.sort(key=lambda n:(call_by_role["Intern"][n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                intern_pool.sort(key=lambda n:(call_type_counter[n], call_by_role["Intern"][n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
                 return intern_pool[0]
             # Fall back to juniors, then seniors
             for fallback_role in ["Junior", "Senior"]:
                 fallback_pool = [n for n in pool if _role(n) == fallback_role]
                 if fallback_pool:
-                    fallback_pool.sort(key=lambda n:(call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                    fallback_pool.sort(key=lambda n:(call_type_counter[n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
                     return fallback_pool[0]
             return None
 
@@ -1165,41 +1168,43 @@ def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_dat
             base_pool=[n for n in names if norm_label(schedule_df.loc[n, hdr]) not in excluded_base]
             used=set()
 
-            # F/Su
+            # F/Su - use fsu_calls counter for even F/Su distribution
             team=[]
             for need in ("Senior","Junior","Intern"):
-                p=pick([n for n in base_pool if n not in used], need, block_ctr, bi, wk)
+                p=pick([n for n in base_pool if n not in used], need, block_ctr, bi, wk, fsu_calls)
                 if p: team.append(p); used.add(p)
             if len(team)<3:
                 pool_any=[n for n in names if n not in used and block_ctr[n]<2]
                 while len(team)<3 and pool_any:
                     need=("Senior","Junior","Intern")[len(team)]
-                    p=pick(pool_any, need, block_ctr, bi, wk)
+                    p=pick(pool_any, need, block_ctr, bi, wk, fsu_calls)
                     if not p: break
                     team.append(p); used.add(p); pool_any.remove(p)
                     issues.append(("Forced override", hdr, f"Week {wk+1}: {p} → F/Su to ensure coverage"))
             for n in team:
                 daily.loc[n, [sucol]]="F/Su"; block_ctr[n]+=1; call_year[n]+=1; last_global_wknd[n]=global_week_index(bi,wk)
                 call_by_role[_role(n)][n] += 1  # Track by role for fairness
+                fsu_calls[n] += 1  # Track F/Su specifically
             if len(team)<3:
                 issues.append(("Call coverage shortfall", hdr, f"Week {wk+1}: F/Su {len(team)}/3"))
 
-            # Sa
+            # Sa - use sa_calls counter for even Sa distribution
             team=[]
             for need in ("Senior","Junior","Intern"):
-                p=pick([n for n in base_pool if n not in used], need, block_ctr, bi, wk)
+                p=pick([n for n in base_pool if n not in used], need, block_ctr, bi, wk, sa_calls)
                 if p: team.append(p); used.add(p)
             if len(team)<3:
                 pool_any=[n for n in names if n not in used and block_ctr[n]<2]
                 while len(team)<3 and pool_any:
                     need=("Senior","Junior","Intern")[len(team)]
-                    p=pick(pool_any, need, block_ctr, bi, wk)
+                    p=pick(pool_any, need, block_ctr, bi, wk, sa_calls)
                     if not p: break
                     team.append(p); used.add(p); pool_any.remove(p)
                     issues.append(("Forced override", hdr, f"Week {wk+1}: {p} → Sa to ensure coverage"))
             for n in team:
                 daily.loc[n, [scol]]="Sa"; block_ctr[n]+=1; call_year[n]+=1; last_global_wknd[n]=global_week_index(bi,wk)
                 call_by_role[_role(n)][n] += 1  # Track by role for fairness
+                sa_calls[n] += 1  # Track Sa specifically
             if len(team)<3:
                 issues.append(("Call coverage shortfall", hdr, f"Week {wk+1}: Sa {len(team)}/3"))
 
