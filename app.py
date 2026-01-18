@@ -1088,6 +1088,8 @@ def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_dat
     excluded_base=set(map(norm_label, constraints.get("exclude_from_call", [])))
 
     call_year=Counter()
+    # Track calls separately by role for fairer distribution within each group
+    call_by_role = {"Senior": Counter(), "Junior": Counter(), "Intern": Counter()}
     issues = st.session_state.setdefault("forced_call_issues", [])
 
     last_global_wknd = defaultdict(lambda: -999)
@@ -1098,11 +1100,43 @@ def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_dat
 
     def pick(pool, need, block_ctr, bi, wk):
         pool = [n for n in pool if block_ctr[n]<2]
-        pool.sort(key=lambda n:(call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
-        for n in pool:
-            if need == "Senior" and _role(n)=="Senior": return n
-            if need == "Junior" and _role(n) in {"Junior","Senior"}: return n
-            if need == "Intern" and _role(n) in {"Intern","Junior","Senior"}: return n
+
+        # For Junior slot, strongly prefer actual juniors (PGY-2/3) for even distribution
+        if need == "Junior":
+            # First try to pick from actual juniors only, sorted by their junior-specific call count
+            junior_pool = [n for n in pool if _role(n) == "Junior"]
+            if junior_pool:
+                junior_pool.sort(key=lambda n:(call_by_role["Junior"][n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                return junior_pool[0]
+            # Fall back to seniors if no juniors available
+            senior_pool = [n for n in pool if _role(n) == "Senior"]
+            if senior_pool:
+                senior_pool.sort(key=lambda n:(call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                return senior_pool[0]
+            return None
+
+        # For Senior slot, pick from seniors sorted by their senior-specific call count
+        if need == "Senior":
+            senior_pool = [n for n in pool if _role(n) == "Senior"]
+            if senior_pool:
+                senior_pool.sort(key=lambda n:(call_by_role["Senior"][n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                return senior_pool[0]
+            return None
+
+        # For Intern slot, prefer actual interns
+        if need == "Intern":
+            intern_pool = [n for n in pool if _role(n) == "Intern"]
+            if intern_pool:
+                intern_pool.sort(key=lambda n:(call_by_role["Intern"][n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                return intern_pool[0]
+            # Fall back to juniors, then seniors
+            for fallback_role in ["Junior", "Senior"]:
+                fallback_pool = [n for n in pool if _role(n) == fallback_role]
+                if fallback_pool:
+                    fallback_pool.sort(key=lambda n:(call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                    return fallback_pool[0]
+            return None
+
         return None
 
     for bi,(s,e) in enumerate(blocks):
@@ -1131,6 +1165,7 @@ def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_dat
                     issues.append(("Forced override", hdr, f"Week {wk+1}: {p} → F/Su to ensure coverage"))
             for n in team:
                 daily.loc[n, [sucol]]="F/Su"; block_ctr[n]+=1; call_year[n]+=1; last_global_wknd[n]=global_week_index(bi,wk)
+                call_by_role[_role(n)][n] += 1  # Track by role for fairness
             if len(team)<3:
                 issues.append(("Call coverage shortfall", hdr, f"Week {wk+1}: F/Su {len(team)}/3"))
 
@@ -1149,6 +1184,7 @@ def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_dat
                     issues.append(("Forced override", hdr, f"Week {wk+1}: {p} → Sa to ensure coverage"))
             for n in team:
                 daily.loc[n, [scol]]="Sa"; block_ctr[n]+=1; call_year[n]+=1; last_global_wknd[n]=global_week_index(bi,wk)
+                call_by_role[_role(n)][n] += 1  # Track by role for fairness
             if len(team)<3:
                 issues.append(("Call coverage shortfall", hdr, f"Week {wk+1}: Sa {len(team)}/3"))
 
