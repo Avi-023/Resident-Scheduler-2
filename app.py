@@ -41,6 +41,22 @@ PALETTE = {
 WHITE_TEXT = {"nights", "chief", "vascular", "red_green"}
 BOLD_TEXT  = {"icu", "vascular", "red_green"}
 
+# Dropdown options for rotation assignments
+ROTATION_OPTIONS = [
+    "",  # Allow blank/empty
+    "Gold",
+    "Red/Green",
+    "Vascular",
+    "Breast",
+    "Chief",
+    "ICU",
+    "Floor",
+    "Nights",
+    "Elective",
+    "Pittsburgh",
+    "Vacation",
+]
+
 def norm_label(v: str) -> str:
     if not isinstance(v, str) or not v.strip():
         return ""
@@ -133,15 +149,27 @@ def block_has_late_january(s: date, e: date, ay_start: date) -> bool:
 # Lite-mode friendly table
 # --------------------------
 def show_table(df: pd.DataFrame, key: str, *, editable: bool, hide_index: bool=False,
-               styler_subset=None, daily=False, index_name_hint="Resident") -> pd.DataFrame:
+               styler_subset=None, daily=False, index_name_hint="Resident",
+               dropdown_columns=None, dropdown_options=None) -> pd.DataFrame:
     if HAS_ARROW:
         if editable:
+            # Build column config for dropdowns if specified
+            column_config = {}
+            if dropdown_columns and dropdown_options:
+                for col in dropdown_columns:
+                    if col in df.columns:
+                        column_config[col] = st.column_config.SelectboxColumn(
+                            col,
+                            options=dropdown_options,
+                            required=False,
+                        )
             return st.data_editor(
                 df,
                 use_container_width=True,
                 key=key,
                 hide_index=hide_index,
-                num_rows="dynamic"  # enable add/remove rows
+                num_rows="dynamic",  # enable add/remove rows
+                column_config=column_config if column_config else None
             )
         else:
             if styler_subset is not None:
@@ -1843,7 +1871,11 @@ if "dailies" in st.session_state and "schedule_df" in st.session_state:
         view_df = schedule_df if target == "(all)" else schedule_df.loc[[target]]
         if edit_mode:
             yearly_edit = view_df.reset_index().rename(columns={"index":"Resident"})
-            edited = show_table(yearly_edit, "yearly_editor", editable=True, hide_index=True, index_name_hint="Resident")
+            # Get all block columns (everything except "Resident") for dropdown menus
+            block_columns = [c for c in yearly_edit.columns if c != "Resident"]
+            edited = show_table(yearly_edit, "yearly_editor", editable=True, hide_index=True,
+                              index_name_hint="Resident", dropdown_columns=block_columns,
+                              dropdown_options=ROTATION_OPTIONS)
             if st.button("Apply Yearly edits → rebuild Daily / Checks / Export"):
                 new_yearly = edited.set_index("Resident") if "Resident" in edited.columns else edited.copy()
                 if target != "(all)":
