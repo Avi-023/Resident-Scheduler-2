@@ -378,7 +378,7 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
     # carry forward user-fixed entries
     if base_fixed is not None and not base_fixed.empty:
         base_fixed = base_fixed.reindex(index=names, columns=headers)
-        mask = base_fixed.notna() & (base_fixed.astype(str).str.strip() != "")
+        mask = base_fixed.notna() & (base_fixed.apply(lambda col: col.astype(str).str.strip()) != "")
         schedule_df[mask] = base_fixed[mask]
 
     # Assignment reasons
