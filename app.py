@@ -1919,35 +1919,45 @@ if "dailies" in st.session_state and "schedule_df" in st.session_state:
             # Fairness Charts
             st.markdown("---")
             st.markdown("#### Fairness Charts")
+            st.caption("All charts sorted by PGY level (PGY-5 first, then PGY-4, PGY-3, PGY-2, PGY-1).")
+
+            # PGY sort order for all charts
+            pgy_order = {"PGY-5": 0, "PGY-4": 1, "PGY-3": 2, "PGY-2": 3, "PGY-1": 4}
 
             # Weekend Call Load Chart
             st.markdown("**Weekend Call Load by Resident**")
             call_data = checks["call"].copy()
-            call_chart_data = call_data.set_index("Resident")[["F/Su", "Sa"]].sort_index()
+            call_data["_pgy_ord"] = call_data["PGY"].map(pgy_order)
+            call_data_sorted = call_data.sort_values(["_pgy_ord", "Resident"]).drop(columns=["_pgy_ord"])
+            call_chart_data = call_data_sorted.set_index("Resident")[["F/Su", "Sa"]]
             st.bar_chart(call_chart_data, use_container_width=True)
 
             # Special Blocks Chart
             st.markdown("**Special Blocks by Resident**")
             special_data = checks["special_counts"].copy()
-            special_chart_data = special_data.set_index("Resident")[["Night Float blocks", "Pittsburgh blocks", "Elective blocks"]].sort_index()
+            special_data["_pgy_ord"] = special_data["PGY"].map(pgy_order)
+            special_data_sorted = special_data.sort_values(["_pgy_ord", "Resident"]).drop(columns=["_pgy_ord"])
+            special_chart_data = special_data_sorted.set_index("Resident")[["Night Float blocks", "Pittsburgh blocks", "Elective blocks"]]
             st.bar_chart(special_chart_data, use_container_width=True)
 
             # Rotation Distribution Chart
             st.markdown("**Rotation Distribution by Resident (All Rotations)**")
             rot_data = checks["rot_counts"].copy()
             rot_cols = [c for c in rot_data.columns if c not in ["Resident", "PGY"]]
-            rot_chart_data = rot_data.set_index("Resident")[rot_cols].sort_index()
+            rot_data["_pgy_ord"] = rot_data["PGY"].map(pgy_order)
+            rot_data_sorted = rot_data.sort_values(["_pgy_ord", "Resident"]).drop(columns=["_pgy_ord"])
+            rot_chart_data = rot_data_sorted.set_index("Resident")[rot_cols]
             st.bar_chart(rot_chart_data, use_container_width=True)
 
             # Individual Rotation Charts
             st.markdown("---")
             st.markdown("#### Individual Rotation Comparisons")
-            st.caption("Each chart shows how many blocks each resident has for that rotation.")
+            st.caption("Each chart shows how many blocks each resident has for that rotation (sorted by PGY).")
 
-            # Create individual bar chart for each rotation
+            # Create individual bar chart for each rotation (sorted by PGY)
             for rotation in rot_cols:
                 st.markdown(f"**{rotation}**")
-                single_rot_data = rot_data.set_index("Resident")[[rotation]].sort_index()
+                single_rot_data = rot_data_sorted.set_index("Resident")[[rotation]]
                 st.bar_chart(single_rot_data, use_container_width=True)
 
     # Export
