@@ -1948,6 +1948,29 @@ if "dailies" in st.session_state and "schedule_df" in st.session_state:
                 st.markdown("**Night Float overrides & warnings**")
                 st.dataframe(checks["nf_overrides"], use_container_width=True, hide_index=True)
 
+            # Fairness Charts
+            st.markdown("---")
+            st.markdown("#### Fairness Charts")
+
+            # Weekend Call Load Chart
+            st.markdown("**Weekend Call Load by Resident**")
+            call_data = checks["call"].copy()
+            call_chart_data = call_data.set_index("Resident")[["F/Su", "Sa"]].sort_index()
+            st.bar_chart(call_chart_data, use_container_width=True)
+
+            # Special Blocks Chart
+            st.markdown("**Special Blocks by Resident**")
+            special_data = checks["special_counts"].copy()
+            special_chart_data = special_data.set_index("Resident")[["Night Float blocks", "Pittsburgh blocks", "Elective blocks"]].sort_index()
+            st.bar_chart(special_chart_data, use_container_width=True)
+
+            # Rotation Distribution Chart
+            st.markdown("**Rotation Distribution by Resident**")
+            rot_data = checks["rot_counts"].copy()
+            rot_cols = [c for c in rot_data.columns if c not in ["Resident", "PGY"]]
+            rot_chart_data = rot_data.set_index("Resident")[rot_cols].sort_index()
+            st.bar_chart(rot_chart_data, use_container_width=True)
+
     # Export
     with tabs[3]:
         base_yearly = st.session_state.get("schedule_df_effective", None) or get_effective_yearly_for_checks()
