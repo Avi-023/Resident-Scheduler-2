@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 import streamlit as st
 import pandas as pd
 import numpy as np
+import altair as alt
 
 # --------------------------
 # Optional libraries
@@ -1924,30 +1925,52 @@ if "dailies" in st.session_state and "schedule_df" in st.session_state:
             # PGY sort order for all charts
             pgy_order = {"PGY-5": 0, "PGY-4": 1, "PGY-3": 2, "PGY-2": 3, "PGY-1": 4}
 
+            # Helper to get sorted resident order
+            def get_resident_order(df):
+                df = df.copy()
+                df["_pgy_ord"] = df["PGY"].map(pgy_order)
+                df_sorted = df.sort_values(["_pgy_ord", "Resident"])
+                return df_sorted["Resident"].tolist()
+
             # Weekend Call Load Chart
             st.markdown("**Weekend Call Load by Resident**")
             call_data = checks["call"].copy()
-            call_data["_pgy_ord"] = call_data["PGY"].map(pgy_order)
-            call_data_sorted = call_data.sort_values(["_pgy_ord", "Resident"]).drop(columns=["_pgy_ord"])
-            call_chart_data = call_data_sorted.set_index("Resident")[["F/Su", "Sa"]]
-            st.bar_chart(call_chart_data, use_container_width=True)
+            resident_order = get_resident_order(call_data)
+            call_melted = call_data.melt(id_vars=["Resident", "PGY"], value_vars=["F/Su", "Sa"], var_name="Call Type", value_name="Count")
+            call_chart = alt.Chart(call_melted).mark_bar().encode(
+                x=alt.X("Resident:N", sort=resident_order, title="Resident"),
+                y=alt.Y("Count:Q", title="Count"),
+                color=alt.Color("Call Type:N"),
+                xOffset="Call Type:N"
+            ).properties(height=300)
+            st.altair_chart(call_chart, use_container_width=True)
 
             # Special Blocks Chart
             st.markdown("**Special Blocks by Resident**")
             special_data = checks["special_counts"].copy()
-            special_data["_pgy_ord"] = special_data["PGY"].map(pgy_order)
-            special_data_sorted = special_data.sort_values(["_pgy_ord", "Resident"]).drop(columns=["_pgy_ord"])
-            special_chart_data = special_data_sorted.set_index("Resident")[["Night Float blocks", "Pittsburgh blocks", "Elective blocks"]]
-            st.bar_chart(special_chart_data, use_container_width=True)
+            resident_order = get_resident_order(special_data)
+            special_melted = special_data.melt(id_vars=["Resident", "PGY"], value_vars=["Night Float blocks", "Pittsburgh blocks", "Elective blocks"], var_name="Block Type", value_name="Count")
+            special_chart = alt.Chart(special_melted).mark_bar().encode(
+                x=alt.X("Resident:N", sort=resident_order, title="Resident"),
+                y=alt.Y("Count:Q", title="Count"),
+                color=alt.Color("Block Type:N"),
+                xOffset="Block Type:N"
+            ).properties(height=300)
+            st.altair_chart(special_chart, use_container_width=True)
 
             # Rotation Distribution Chart
             st.markdown("**Rotation Distribution by Resident (All Rotations)**")
             rot_data = checks["rot_counts"].copy()
             rot_cols = [c for c in rot_data.columns if c not in ["Resident", "PGY"]]
-            rot_data["_pgy_ord"] = rot_data["PGY"].map(pgy_order)
-            rot_data_sorted = rot_data.sort_values(["_pgy_ord", "Resident"]).drop(columns=["_pgy_ord"])
-            rot_chart_data = rot_data_sorted.set_index("Resident")[rot_cols]
-            st.bar_chart(rot_chart_data, use_container_width=True)
+            resident_order = get_resident_order(rot_data)
+            rot_melted = rot_data.melt(id_vars=["Resident", "PGY"], value_vars=rot_cols, var_name="Rotation", value_name="Count")
+            rot_chart = alt.Chart(rot_melted).mark_bar().encode(
+                x=alt.X("Resident:N", sort=resident_order, title="Resident"),
+                y=alt.Y("Count:Q", title="Count"),
+                color=alt.Color("Rotation:N"),
+                xOffset="Rotation:N"
+            ).properties(height=400)
+            st.altair_chart(rot_chart, use_container_width=True)
 
             # Individual Rotation Charts
             st.markdown("---")
@@ -1957,8 +1980,11 @@ if "dailies" in st.session_state and "schedule_df" in st.session_state:
             # Create individual bar chart for each rotation (sorted by PGY)
             for rotation in rot_cols:
                 st.markdown(f"**{rotation}**")
-                single_rot_data = rot_data_sorted.set_index("Resident")[[rotation]]
-                st.bar_chart(single_rot_data, use_container_width=True)
+                single_chart = alt.Chart(rot_data).mark_bar().encode(
+                    x=alt.X("Resident:N", sort=resident_order, title="Resident"),
+                    y=alt.Y(f"{rotation}:Q", title="Blocks")
+                ).properties(height=250)
+                st.altair_chart(single_chart, use_container_width=True)
 
     # Export
     with tabs[3]:
