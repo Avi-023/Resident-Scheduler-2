@@ -425,6 +425,7 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
     PGH_BLOCK_BLACKLIST   = set(int(x) for x in constraints.get("pgh_block_blacklist", []))
 
     vasc_junior_counts = Counter()  # track PGY-2/3 used as vascular juniors
+    vasc_intern_counts = Counter()  # track PGY-1 used as vascular interns
 
     # Night float tracking
     st.session_state.setdefault("_nf_counts", Counter())
@@ -784,7 +785,21 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
 
         # --------- Vascular baseline BEFORE RG/Gold seeding (attempt S/J/I; must include a Senior) ---------
         assign_first([n for n in names if is_senior(n) and n not in locked_rows], bi, "Vascular")  # Senior required (hard rule checked later)
-        assign_first([n for n in names if is_intern(n) and n not in locked_rows], bi, "Vascular")
+
+        # Vascular intern: pick the intern with fewest Vascular assignments for even distribution
+        avail_interns_for_vasc = [n for n in names if is_intern(n)
+                                  and n not in locked_rows
+                                  and pd.isna(schedule_df.loc[n, hdr])
+                                  and not is_unavailable(n, roster_map[n]["PGY"], "Vascular", bi)
+                                  and not would_exceed_run(n, bi, "Vascular")]
+        if avail_interns_for_vasc:
+            pick = sorted(avail_interns_for_vasc, key=lambda n:(vasc_intern_counts[n],
+                                                                 int((schedule_df.loc[n]=="Vascular").sum()),
+                                                                 repeat_penalty(n, bi, "Vascular"),
+                                                                 rng.random(), n))[0]
+            schedule_df.loc[pick, hdr] = "Vascular"
+            vasc_intern_counts[pick] += 1
+            log_reason(reasons, pick, hdr, "Vascular intern (PGY-1 fairness)")
         if count_team_here(bi,"Vascular") >= 2 and count_team_here(bi,"Vascular") < VASC_MAX:
             avail_for_vasc = [n for n in names if pd.isna(schedule_df.loc[n, hdr])
                               and n not in locked_rows
