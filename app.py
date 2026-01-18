@@ -42,7 +42,7 @@ PALETTE = {
 WHITE_TEXT = {"nights", "chief", "vascular", "red_green"}
 BOLD_TEXT  = {"icu", "vascular", "red_green"}
 
-# Dropdown options for rotation assignments
+# Dropdown options for rotation assignments (Yearly tab)
 ROTATION_OPTIONS = [
     "",  # Allow blank/empty
     "Gold",
@@ -56,6 +56,31 @@ ROTATION_OPTIONS = [
     "Elective",
     "Pittsburgh",
     "Vacation",
+]
+
+# Dropdown options for daily assignments (Daily Blocks tab)
+DAILY_OPTIONS = [
+    "",  # Allow blank/empty
+    "Gold",
+    "Red/Green",
+    "Vascular",
+    "Breast",
+    "Chief",
+    "ICU",
+    "Floor",
+    "Nights",
+    "Elective",
+    "Pittsburgh",
+    "Vacation",
+    "Personal Day",
+    "Interview",
+    "ATLS",
+    "Conference",
+    "Surgical Jeopardy",
+    "Cadaver Lab",
+    "Superservice",
+    "F/Su",
+    "Sa",
 ]
 
 def norm_label(v: str) -> str:
@@ -272,7 +297,7 @@ def normalize_roster_input(df: pd.DataFrame) -> pd.DataFrame:
     if include_col and include_col != "Include?": df = df.rename(columns={include_col: "Include?"})
 
     # Optional attribute columns respected by engine
-    for c in ["Max Nights","Avoid Services","PTO Windows","Notes","Lock"]:
+    for c in ["Notes","Vacation 1","Vacation 2","Vacation 3"]:
         if c not in df.columns: df[c] = ""
 
     # Ensure required cols
@@ -307,7 +332,7 @@ def normalize_roster_input(df: pd.DataFrame) -> pd.DataFrame:
     bad = df["Resident"].str.strip().str.lower().isin(["", "none", "na", "n/a"])
     df = df[~bad].reset_index(drop=True)
 
-    cols = ["Resident","PGY","Prelim","Include?","Max Nights","Avoid Services","PTO Windows","Notes","Lock"]
+    cols = ["Resident","PGY","Prelim","Include?","Notes","Vacation 1","Vacation 2","Vacation 3"]
     return df[[c for c in cols if c in df.columns]].reset_index(drop=True)
 
 def validate_roster(df: pd.DataFrame) -> None:
@@ -336,11 +361,10 @@ def ensure_roster_size(df: pd.DataFrame, size: int) -> pd.DataFrame:
             "PGY": ["PGY-1"] * add,
             "Prelim": ["N"] * add,
             "Include?": ["Y"] * add,
-            "Max Nights": ["" for _ in range(add)],
-            "Avoid Services": ["" for _ in range(add)],
-            "PTO Windows": ["" for _ in range(add)],
             "Notes": ["" for _ in range(add)],
-            "Lock": ["" for _ in range(add)],
+            "Vacation 1": ["" for _ in range(add)],
+            "Vacation 2": ["" for _ in range(add)],
+            "Vacation 3": ["" for _ in range(add)],
         })
         df = pd.concat([df, add_df], ignore_index=True)
     elif len(df) > size:
@@ -1786,8 +1810,8 @@ with st.sidebar:
     with c1:
         if st.button("➕ Add blank row"):
             row = pd.DataFrame([{"Resident":"", "PGY":"PGY-1", "Prelim":"N", "Include?":"Y",
-                                 "Max Nights":"","Avoid Services":"","PTO Windows":"","Notes":"","Lock":""}])
-            st.session_state.roster_table = pd.concat([st.session_state.get("roster_table", pd.DataFrame(columns=["Resident","PGY","Prelim","Include?","Max Nights","Avoid Services","PTO Windows","Notes","Lock"])), row], ignore_index=True)
+                                 "Notes":"","Vacation 1":"","Vacation 2":"","Vacation 3":""}])
+            st.session_state.roster_table = pd.concat([st.session_state.get("roster_table", pd.DataFrame(columns=["Resident","PGY","Prelim","Include?","Notes","Vacation 1","Vacation 2","Vacation 3"])), row], ignore_index=True)
     with c2:
         if st.button("🧹 Remove empty/None rows"):
             if "roster_table" in st.session_state:
@@ -1800,38 +1824,45 @@ with st.sidebar:
             if "roster_table" in st.session_state:
                 st.session_state.roster_table = ensure_roster_size(st.session_state.roster_table, st.session_state.roster_size)
             else:
-                st.session_state.roster_table = ensure_roster_size(pd.DataFrame(columns=["Resident","PGY","Prelim","Include?","Max Nights","Avoid Services","PTO Windows","Notes","Lock"]), st.session_state.roster_size)
+                st.session_state.roster_table = ensure_roster_size(pd.DataFrame(columns=["Resident","PGY","Prelim","Include?","Notes","Vacation 1","Vacation 2","Vacation 3"]), st.session_state.roster_size)
 
     st.checkbox("Auto-assign weekend call after edits", True, key="auto_call")
 
-    st.markdown("---")
-    st.checkbox("Use optimizer (polish with ILP if available)", False, key="use_optimizer")
-    st.number_input("Optimizer time limit (sec)", 1, 30, 8, key="opt_time_limit")
-    st.number_input("Random seed (tie-breaks)", 0, 10_000, 0, key="random_seed")
-    scenario_name = st.text_input("Scenario name (save snapshot)", value="", key="scenario_name")
+    # Hidden: these features are still functional but not exposed in UI
+    # st.checkbox("Use optimizer (polish with ILP if available)", False, key="use_optimizer")
+    # st.number_input("Optimizer time limit (sec)", 1, 30, 8, key="opt_time_limit")
+    # st.number_input("Random seed (tie-breaks)", 0, 10_000, 0, key="random_seed")
+    # scenario_name = st.text_input("Scenario name (save snapshot)", value="", key="scenario_name")
+    # Set default values for hidden controls
+    if "use_optimizer" not in st.session_state:
+        st.session_state.use_optimizer = False
+    if "opt_time_limit" not in st.session_state:
+        st.session_state.opt_time_limit = 8
+    if "random_seed" not in st.session_state:
+        st.session_state.random_seed = 0
 
 # Editable roster (seed)
 st.subheader("Roster (editable)")
 _default_roster=pd.DataFrame([
-    ["Avi Robinson","PGY-5","N","Y","","","","",""],
-    ["Kathleen Koesarie","PGY-5","N","Y","","","","",""],
-    ["Arruj Hassan","PGY-5","N","Y","","","","",""],
-    ["Shirin Siddiqi","PGY-5","N","Y","","","","",""],
-    ["Kayla Orr","PGY-4","N","Y","","","","",""],
-    ["Makayla Gologram","PGY-4","N","Y","","","","",""],
-    ["Adrianne Pellegrini","PGY-4","N","Y","","","","",""],
-    ["Zane Hamden","PGY-3","N","Y","","","","",""],
-    ["Lauren Delong","PGY-3","N","Y","","","","",""],
-    ["Brittany Steffens","PGY-3","N","Y","","","","",""],
-    ["Zoe Wecht","PGY-2","N","Y","","","","",""],
-    ["Jessica Marks","PGY-2","N","Y","","","","",""],
-    ["Jacob Allenabaugh","PGY-2","N","Y","","","","",""],
-    ["Intern 1","PGY-1","N","Y","","","","",""],
-    ["Intern 2","PGY-1","N","Y","","","","",""],
-    ["Intern 3","PGY-1","N","Y","","","","",""],
-    ["Intern 4 (Prelim)","PGY-1","Y","Y","","","","",""],
-    ["Intern 5 (Prelim)","PGY-1","Y","Y","","","","",""],
-], columns=["Resident","PGY","Prelim","Include?","Max Nights","Avoid Services","PTO Windows","Notes","Lock"])
+    ["Avi Robinson","PGY-5","N","Y","","","",""],
+    ["Kathleen Koesarie","PGY-5","N","Y","","","",""],
+    ["Arruj Hassan","PGY-5","N","Y","","","",""],
+    ["Shirin Siddiqi","PGY-5","N","Y","","","",""],
+    ["Kayla Orr","PGY-4","N","Y","","","",""],
+    ["Makayla Gologram","PGY-4","N","Y","","","",""],
+    ["Adrianne Pellegrini","PGY-4","N","Y","","","",""],
+    ["Zane Hamden","PGY-3","N","Y","","","",""],
+    ["Lauren Delong","PGY-3","N","Y","","","",""],
+    ["Brittany Steffens","PGY-3","N","Y","","","",""],
+    ["Zoe Wecht","PGY-2","N","Y","","","",""],
+    ["Jessica Marks","PGY-2","N","Y","","","",""],
+    ["Jacob Allenabaugh","PGY-2","N","Y","","","",""],
+    ["Intern 1","PGY-1","N","Y","","","",""],
+    ["Intern 2","PGY-1","N","Y","","","",""],
+    ["Intern 3","PGY-1","N","Y","","","",""],
+    ["Intern 4 (Prelim)","PGY-1","Y","Y","","","",""],
+    ["Intern 5 (Prelim)","PGY-1","Y","Y","","","",""],
+], columns=["Resident","PGY","Prelim","Include?","Notes","Vacation 1","Vacation 2","Vacation 3"])
 
 if "roster_table" not in st.session_state:
     st.session_state.roster_table = _default_roster.copy()
@@ -1839,15 +1870,15 @@ if "roster_table" not in st.session_state:
 roster = show_table(st.session_state.roster_table, "roster_editor", editable=True, hide_index=True, index_name_hint="Resident")
 st.session_state.roster_table = roster.copy()
 
-# Side: quick fairness indicator (call Gini)
-if "dailies" in st.session_state:
-    call_totals = []
-    for n in st.session_state.schedule_df.index:
-        FSu=Sa=0
-        for d in st.session_state.dailies.values():
-            vals=d.loc[n].to_numpy(); FSu += (vals=="F/Su").sum(); Sa += (vals=="Sa").sum()
-        call_totals.append(FSu+Sa)
-    st.sidebar.markdown(f"**Call balance (Gini):** {gini(call_totals):.3f}")
+# Hidden: Gini fairness indicator (still computed but not displayed)
+# if "dailies" in st.session_state:
+#     call_totals = []
+#     for n in st.session_state.schedule_df.index:
+#         FSu=Sa=0
+#         for d in st.session_state.dailies.values():
+#             vals=d.loc[n].to_numpy(); FSu += (vals=="F/Su").sum(); Sa += (vals=="Sa").sum()
+#         call_totals.append(FSu+Sa)
+#     st.sidebar.markdown(f"**Call balance (Gini):** {gini(call_totals):.3f}")
 
 st.markdown("---")
 colA, colB, colC = st.columns([1,1,1])
@@ -1998,7 +2029,10 @@ if "dailies" in st.session_state and "schedule_df" in st.session_state:
         for name,df in dailies.items():
             st.markdown(f"**{name}**")
             if edit_mode:
-                edited = show_table(df, f"edit_{name}", editable=True, daily=True, index_name_hint="Resident")
+                # Get all columns for dropdown menus (all daily columns)
+                daily_columns = list(df.columns)
+                edited = show_table(df, f"edit_{name}", editable=True, daily=True, index_name_hint="Resident",
+                                   dropdown_columns=daily_columns, dropdown_options=DAILY_OPTIONS)
                 new_dailies[name]=edited.copy()
             else:
                 weekday_cols=[c for c in df.columns if c[0] in ["Monday","Tuesday","Wednesday","Thursday","Friday"]]
