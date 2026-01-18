@@ -664,6 +664,38 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
             # Not solvable even without blacklist; leave for checks to flag
             log_reason(reasons, "(PGH planner)", headers[0], "Unable to schedule all PGY-3 Pittsburgh runs under hard constraints")
 
+    # ========= Pre-plan Breast: ensure every PGY-2+ resident gets at least 1 block =========
+    breast_eligible = [n for n in names if roster_map[n]["PGY"] in {"PGY-2", "PGY-3", "PGY-4", "PGY-5"}]
+    breast_assigned = {n: 0 for n in breast_eligible}
+
+    # Check for any pre-existing Breast assignments
+    for n in breast_eligible:
+        for hdr in headers:
+            if schedule_df.loc[n, hdr] == "Breast":
+                breast_assigned[n] += 1
+
+    # Assign one Breast block to each PGY-2+ resident who doesn't have one yet
+    # Shuffle to ensure fairness in block selection
+    residents_needing_breast = [n for n in breast_eligible if breast_assigned[n] == 0]
+    rng.shuffle(residents_needing_breast)
+
+    for n in residents_needing_breast:
+        # Find a block where this resident is not yet assigned and Breast is not taken
+        available_blocks = []
+        for bi, hdr in enumerate(headers):
+            # Check if resident is unassigned this block and no one else has Breast
+            if pd.isna(schedule_df.loc[n, hdr]) or str(schedule_df.loc[n, hdr]).strip() == "":
+                breast_count_this_block = int((schedule_df[hdr] == "Breast").sum())
+                if breast_count_this_block < BREAST_MAX:
+                    available_blocks.append(bi)
+
+        if available_blocks:
+            # Pick the block where this resident has the fewest other commitments coming up
+            chosen_bi = rng.choice(available_blocks)
+            schedule_df.loc[n, headers[chosen_bi]] = "Breast"
+            breast_assigned[n] += 1
+            log_reason(reasons, n, headers[chosen_bi], "Breast pre-assigned (ensuring all PGY-2+ get at least 1)")
+
     # ---------------- Per-block assignment ----------------
     for bi,(bs,be) in enumerate(blocks):
         hdr = headers[bi]
