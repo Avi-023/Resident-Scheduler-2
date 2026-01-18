@@ -555,6 +555,9 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
 
         # Helper: block allowed under current policy
         def _block_allowed(t: int, honor_blacklist: bool) -> bool:
+            # Block 1 (index 0) is never allowed for Pittsburgh
+            if t == 0:
+                return False
             if honor_blacklist and (t in PGH_BLOCK_BLACKLIST):
                 return False
             s,e = blocks[t]
