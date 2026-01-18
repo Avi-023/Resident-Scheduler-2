@@ -427,6 +427,10 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
     vasc_junior_counts = Counter()  # track PGY-2/3 used as vascular juniors
     vasc_intern_counts = Counter()  # track PGY-1 used as vascular interns
 
+    # Gold/Red/Green fairness tracking by role
+    gold_counts = {"Senior": Counter(), "Junior": Counter(), "Intern": Counter()}
+    rg_counts = {"Senior": Counter(), "Junior": Counter(), "Intern": Counter()}
+
     # Night float tracking
     st.session_state.setdefault("_nf_counts", Counter())
     st.session_state.setdefault("_nf_role_counts", defaultdict(Counter))  # name -> {"Senior":x,"Junior":y,"Intern":z}
@@ -833,15 +837,34 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
             assign_first([n for n in names if roster_map[n]["PGY"] in {"PGY-2","PGY-3","PGY-4","PGY-5"} and n not in locked_rows], bi, "Breast")
 
         # --------- Seed Gold & Red/Green to achieve S/J/I (attempts) and ensure Senior presence (hard) ---------
-        # Gold: Senior, Junior, Intern (in that order)
-        assign_first([n for n in names if is_senior(n) and n not in locked_rows], bi, "Gold")
-        assign_first([n for n in names if is_junior(n) and n not in locked_rows], bi, "Gold")
-        assign_first([n for n in names if is_intern(n) and n not in locked_rows], bi, "Gold")
+        def assign_with_fairness(pool, bi, label, role, counter_dict):
+            """Assign using fairness counter as primary sort key."""
+            hdr = headers[bi]
+            cand = [n for n in pool if pd.isna(schedule_df.loc[n, hdr])
+                    and not is_unavailable(n, roster_map[n]["PGY"], label, bi)
+                    and not would_violate_senior_cap(n, bi, label)
+                    and not would_exceed_run(n, bi, label)]
+            if not cand:
+                return None
+            pick = sorted(cand, key=lambda n:(counter_dict[role][n],
+                                               int((schedule_df.loc[n]==label).sum()),
+                                               repeat_penalty(n, bi, label),
+                                               senior_same_year_penalty(n, bi, label),
+                                               rng.random(), n))[0]
+            schedule_df.loc[pick, hdr] = label
+            counter_dict[role][pick] += 1
+            log_reason(reasons, pick, hdr, f"{label} {role} (fairness-tracked)")
+            return pick
 
-        # Red/Green: Senior, Junior, Intern (in that order)
-        assign_first([n for n in names if is_senior(n) and n not in locked_rows], bi, "Red/Green")
-        assign_first([n for n in names if is_junior(n) and n not in locked_rows], bi, "Red/Green")
-        assign_first([n for n in names if is_intern(n) and n not in locked_rows], bi, "Red/Green")
+        # Gold: Senior, Junior, Intern (in that order) with fairness tracking
+        assign_with_fairness([n for n in names if is_senior(n) and n not in locked_rows], bi, "Gold", "Senior", gold_counts)
+        assign_with_fairness([n for n in names if is_junior(n) and n not in locked_rows], bi, "Gold", "Junior", gold_counts)
+        assign_with_fairness([n for n in names if is_intern(n) and n not in locked_rows], bi, "Gold", "Intern", gold_counts)
+
+        # Red/Green: Senior, Junior, Intern (in that order) with fairness tracking
+        assign_with_fairness([n for n in names if is_senior(n) and n not in locked_rows], bi, "Red/Green", "Senior", rg_counts)
+        assign_with_fairness([n for n in names if is_junior(n) and n not in locked_rows], bi, "Red/Green", "Junior", rg_counts)
+        assign_with_fairness([n for n in names if is_intern(n) and n not in locked_rows], bi, "Red/Green", "Intern", rg_counts)
 
         # Priority fill with caps + hard min/max on Gold/RG; ICU min
         def fill_to(lbl,tgt,cap=None):
