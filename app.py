@@ -179,25 +179,60 @@ def show_table(df: pd.DataFrame, key: str, *, editable: bool, hide_index: bool=F
                dropdown_columns=None, dropdown_options=None) -> pd.DataFrame:
     if HAS_ARROW:
         if editable:
-            # Build column config for dropdowns if specified
-            # Note: tuple columns (like in daily tables) can't be used as keys, so skip them
-            column_config = {}
-            if dropdown_columns and dropdown_options:
-                for col in dropdown_columns:
-                    if col in df.columns and not isinstance(col, tuple):
+            # For daily tables with tuple columns, flatten to strings for dropdown support
+            if daily and isinstance(df.columns, pd.MultiIndex):
+                # Flatten tuple columns to strings
+                flat_df = df.copy()
+                flat_df.columns = [f"{a}|{b}" for (a, b) in flat_df.columns]
+
+                # Build column config for ALL flattened columns
+                column_config = {}
+                if dropdown_options:
+                    for col in flat_df.columns:
                         column_config[col] = st.column_config.SelectboxColumn(
                             col,
                             options=dropdown_options,
                             required=False,
                         )
-            return st.data_editor(
-                df,
-                use_container_width=True,
-                key=key,
-                hide_index=hide_index,
-                num_rows="dynamic",  # enable add/remove rows
-                column_config=column_config if column_config else None
-            )
+
+                edited_flat = st.data_editor(
+                    flat_df,
+                    use_container_width=True,
+                    key=key,
+                    hide_index=hide_index,
+                    num_rows="dynamic",
+                    column_config=column_config if column_config else None
+                )
+
+                # Convert back to MultiIndex columns
+                tuples = []
+                for c in edited_flat.columns:
+                    if isinstance(c, str) and "|" in c:
+                        a, b = c.split("|", 1)
+                        tuples.append((a, b))
+                    else:
+                        tuples.append((c, ""))
+                edited_flat.columns = pd.MultiIndex.from_tuples(tuples, names=["Weekday", "Date"])
+                return edited_flat
+            else:
+                # Non-daily tables: use dropdown columns as specified
+                column_config = {}
+                if dropdown_columns and dropdown_options:
+                    for col in dropdown_columns:
+                        if col in df.columns:
+                            column_config[col] = st.column_config.SelectboxColumn(
+                                col,
+                                options=dropdown_options,
+                                required=False,
+                            )
+                return st.data_editor(
+                    df,
+                    use_container_width=True,
+                    key=key,
+                    hide_index=hide_index,
+                    num_rows="dynamic",
+                    column_config=column_config if column_config else None
+                )
         else:
             if styler_subset is not None:
                 st.dataframe(df.style.applymap(style_each_cell, subset=styler_subset),
