@@ -1184,6 +1184,167 @@ def build_dailies_from_yearly(schedule_df: pd.DataFrame, start_date: date):
     return dailies
 
 # --------------------------
+# Vacation auto-fill from Roster
+# --------------------------
+def parse_vacation_spec(spec: str, blocks: list, start_date: date):
+    """
+    Parse a vacation specification and return a list of (block_index, weekday_dates) tuples.
+
+    Supported formats:
+    - "Block 3", "B3", "block3" - refers to block index 3 (1-based: Block 1 = first block)
+    - "7/1/2025" or "07/01/2025" - a specific date (fills the week containing that date)
+    - "7/1-7/5" or "7/1/2025-7/5/2025" - a date range
+
+    Returns: list of (block_index, list_of_dates) where dates are strings like "07/01/2025"
+    """
+    if not isinstance(spec, str) or not spec.strip():
+        return []
+
+    spec = spec.strip()
+    results = []
+
+    # Try to parse as block reference: "Block 3", "B3", "block 3", etc.
+    block_match = re.match(r"^(?:block\s*)?b?(\d+)$", spec.lower().strip())
+    if block_match:
+        block_num = int(block_match.group(1))
+        # Convert from 1-based to 0-based index
+        bi = block_num - 1
+        if 0 <= bi < len(blocks):
+            s, e = blocks[bi]
+            # Get all weekdays in this block
+            weekday_dates = []
+            d = s
+            while d <= e:
+                if d.weekday() < 5:  # Monday=0 to Friday=4
+                    weekday_dates.append(d.strftime("%m/%d/%Y"))
+                d += timedelta(days=1)
+            results.append((bi, weekday_dates))
+        return results
+
+    # Try to parse as date or date range
+    date_patterns = [
+        r"(\d{1,2}/\d{1,2}/\d{4})",  # 7/1/2025 or 07/01/2025
+        r"(\d{1,2}/\d{1,2})",         # 7/1 (assumes current academic year)
+    ]
+
+    # Check for date range (date-date or date to date)
+    range_match = re.match(r"(\d{1,2}/\d{1,2}(?:/\d{4})?)\s*[-–to]+\s*(\d{1,2}/\d{1,2}(?:/\d{4})?)", spec)
+    if range_match:
+        start_str, end_str = range_match.groups()
+        try:
+            # Parse start date
+            if "/" in start_str and start_str.count("/") == 1:
+                m, d = map(int, start_str.split("/"))
+                y = start_date.year if m >= start_date.month else start_date.year + 1
+                start_d = date(y, m, d)
+            else:
+                parts = start_str.split("/")
+                m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
+                start_d = date(y, m, d)
+
+            # Parse end date
+            if "/" in end_str and end_str.count("/") == 1:
+                m, d = map(int, end_str.split("/"))
+                y = start_date.year if m >= start_date.month else start_date.year + 1
+                end_d = date(y, m, d)
+            else:
+                parts = end_str.split("/")
+                m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
+                end_d = date(y, m, d)
+
+            # Find weekdays in range and which blocks they belong to
+            d = start_d
+            while d <= end_d:
+                if d.weekday() < 5:  # Weekday
+                    # Find which block this date belongs to
+                    for bi, (bs, be) in enumerate(blocks):
+                        if bs <= d <= be:
+                            results.append((bi, [d.strftime("%m/%d/%Y")]))
+                            break
+                d += timedelta(days=1)
+        except Exception:
+            pass
+        return results
+
+    # Try single date
+    single_date_match = re.match(r"(\d{1,2}/\d{1,2}(?:/\d{4})?)", spec)
+    if single_date_match:
+        date_str = single_date_match.group(1)
+        try:
+            if date_str.count("/") == 1:
+                m, d = map(int, date_str.split("/"))
+                y = start_date.year if m >= start_date.month else start_date.year + 1
+                target_d = date(y, m, d)
+            else:
+                parts = date_str.split("/")
+                m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
+                target_d = date(y, m, d)
+
+            # Fill the week containing this date (Mon-Fri)
+            # Find the Monday of that week
+            monday = target_d - timedelta(days=target_d.weekday())
+            weekday_dates = []
+            for i in range(5):  # Mon-Fri
+                wd = monday + timedelta(days=i)
+                weekday_dates.append(wd.strftime("%m/%d/%Y"))
+
+            # Find which block contains most of these dates
+            for bi, (bs, be) in enumerate(blocks):
+                if bs <= target_d <= be:
+                    results.append((bi, weekday_dates))
+                    break
+        except Exception:
+            pass
+
+    return results
+
+def apply_vacation_from_roster(dailies: dict, roster_df: pd.DataFrame, start_date: date):
+    """
+    Apply vacation entries from Roster's Vacation 1/2/3 columns to Daily Blocks.
+
+    This fills in "Vacation" for the weekdays specified in each resident's vacation columns.
+    """
+    blocks = build_blocks(start_date, 13)
+    headers = [hdr_for_block(s, e) for (s, e) in blocks]
+
+    roster = normalize_roster_input(roster_df)
+    roster = roster[roster["Include?"].str.upper().eq("Y")].reset_index(drop=True)
+
+    for _, row in roster.iterrows():
+        resident = row["Resident"]
+
+        for vac_col in ["Vacation 1", "Vacation 2", "Vacation 3"]:
+            if vac_col not in roster.columns:
+                continue
+            spec = row.get(vac_col, "")
+            if not spec or str(spec).strip() == "" or str(spec).lower() == "nan":
+                continue
+
+            parsed = parse_vacation_spec(str(spec), blocks, start_date)
+            for bi, date_list in parsed:
+                if bi < 0 or bi >= len(blocks):
+                    continue
+                block_hdr = headers[bi]
+                if block_hdr not in dailies:
+                    continue
+                daily_df = dailies[block_hdr]
+                if resident not in daily_df.index:
+                    continue
+
+                # Fill in vacation for the specified dates
+                for date_str in date_list:
+                    for col in daily_df.columns:
+                        # col is tuple (weekday, date_string)
+                        if isinstance(col, tuple) and len(col) == 2:
+                            weekday, col_date = col
+                            if weekday in ("Saturday", "Sunday"):
+                                continue  # Don't fill weekends
+                            if col_date == date_str:
+                                daily_df.loc[resident, col] = "Vacation"
+
+    return dailies
+
+# --------------------------
 # Weekend call assignment
 # --------------------------
 def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_date: date, constraints: dict, roster_df: pd.DataFrame):
@@ -2023,6 +2184,9 @@ def generate_schedule_from_roster():
         yearly = polish_with_optimizer(yearly, roster_norm.copy(), ay_start, constraints, time_limit_s=st.session_state.opt_time_limit)
 
     dailies = build_dailies_from_yearly(yearly, ay_start)
+    # Auto-fill vacation from Roster's Vacation 1/2/3 columns
+    if st.session_state.get("auto_vacation", True):
+        apply_vacation_from_roster(dailies, roster_norm, ay_start)
     if st.session_state.auto_call:
         auto_assign_weekend_call(dailies, yearly, ay_start, constraints, roster_norm)
 
@@ -2063,6 +2227,8 @@ with tabs[0]:
         st.session_state.roster_table = roster.copy()
 
         st.checkbox("Auto-assign weekend call after edits", True, key="auto_call")
+        st.checkbox("Auto-fill vacation dates from Roster columns", True, key="auto_vacation",
+                   help="Fills 'Vacation' in Daily Blocks based on Vacation 1/2/3 columns. Accepts: 'Block 3', 'B3', '7/1/2025', or date ranges like '7/1-7/5'.")
 
         if st.button("Generate schedule from roster"):
             generate_schedule_from_roster()
@@ -2090,6 +2256,9 @@ with tabs[0]:
                         new_yearly = full
                     st.session_state.schedule_df = new_yearly
                     new_dailies = build_dailies_from_yearly(new_yearly, ay_start)
+                    # Auto-fill vacation from Roster's Vacation 1/2/3 columns
+                    if st.session_state.get("auto_vacation", True):
+                        apply_vacation_from_roster(new_dailies, roster_df_ss, ay_start)
                     if st.session_state.auto_call:
                         auto_assign_weekend_call(new_dailies, new_yearly, ay_start, constraints, roster_df_ss)
                     st.session_state.dailies = new_dailies
@@ -2117,6 +2286,9 @@ with tabs[0]:
                     # Re-run scheduler with base_fixed to fill in other rotations fairly
                     rebalanced = auto_generate_yearly(roster_df_ss.copy(), ay_start, constraints, base_fixed=base_fixed)
                     new_dailies = build_dailies_from_yearly(rebalanced, ay_start)
+                    # Auto-fill vacation from Roster's Vacation 1/2/3 columns
+                    if st.session_state.get("auto_vacation", True):
+                        apply_vacation_from_roster(new_dailies, roster_df_ss, ay_start)
                     if st.session_state.auto_call:
                         auto_assign_weekend_call(new_dailies, rebalanced, ay_start, constraints, roster_df_ss)
 
