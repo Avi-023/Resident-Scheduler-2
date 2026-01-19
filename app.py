@@ -1881,8 +1881,6 @@ with st.sidebar:
             else:
                 st.session_state.roster_table = ensure_roster_size(pd.DataFrame(columns=["Resident","PGY","Prelim","Include?","Notes","Vacation 1","Vacation 2","Vacation 3"]), st.session_state.roster_size)
 
-    st.checkbox("Auto-assign weekend call after edits", True, key="auto_call")
-
     # Hidden: these features are still functional but not exposed in UI
     # st.checkbox("Use optimizer (polish with ILP if available)", False, key="use_optimizer")
     # st.number_input("Optimizer time limit (sec)", 1, 30, 8, key="opt_time_limit")
