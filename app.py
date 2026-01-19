@@ -1219,12 +1219,14 @@ def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_dat
             # First try to pick from actual juniors only, sorted by their call counts
             junior_pool = [n for n in pool if _role(n) == "Junior"]
             if junior_pool:
-                junior_pool.sort(key=lambda n:(call_type_counter[n], call_by_role["Junior"][n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                # Primary sort: total calls (call_year) to balance across all juniors
+                # Secondary: role-specific count, then call type, then spacing
+                junior_pool.sort(key=lambda n:(call_year[n], call_by_role["Junior"][n], call_type_counter[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
                 return junior_pool[0]
             # Fall back to seniors if no juniors available
             senior_pool = [n for n in pool if _role(n) == "Senior"]
             if senior_pool:
-                senior_pool.sort(key=lambda n:(call_type_counter[n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                senior_pool.sort(key=lambda n:(call_year[n], call_type_counter[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
                 return senior_pool[0]
             return None
 
@@ -1232,7 +1234,8 @@ def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_dat
         if need == "Senior":
             senior_pool = [n for n in pool if _role(n) == "Senior"]
             if senior_pool:
-                senior_pool.sort(key=lambda n:(call_type_counter[n], call_by_role["Senior"][n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                # Primary sort: total calls to balance across all seniors
+                senior_pool.sort(key=lambda n:(call_year[n], call_by_role["Senior"][n], call_type_counter[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
                 return senior_pool[0]
             return None
 
@@ -1240,13 +1243,14 @@ def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_dat
         if need == "Intern":
             intern_pool = [n for n in pool if _role(n) == "Intern"]
             if intern_pool:
-                intern_pool.sort(key=lambda n:(call_type_counter[n], call_by_role["Intern"][n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                # Primary sort: total calls to balance across all interns
+                intern_pool.sort(key=lambda n:(call_year[n], call_by_role["Intern"][n], call_type_counter[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
                 return intern_pool[0]
             # Fall back to juniors, then seniors
             for fallback_role in ["Junior", "Senior"]:
                 fallback_pool = [n for n in pool if _role(n) == fallback_role]
                 if fallback_pool:
-                    fallback_pool.sort(key=lambda n:(call_type_counter[n], call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                    fallback_pool.sort(key=lambda n:(call_year[n], call_type_counter[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
                     return fallback_pool[0]
             return None
 
