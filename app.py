@@ -1610,13 +1610,17 @@ def compute_checks(schedule_df: pd.DataFrame, dailies: dict, roster_df: pd.DataF
                 continue
             row_data = daily_df.loc[n]
 
-            # Count days off in this block (blank or empty assignments on weekdays)
+            # Count days off in this block
             days_off = 0
             vacation_days_in_block = 0
             for (weekday, dstr), val in row_data.items():
                 val_str = str(val).strip() if pd.notna(val) else ""
-                # Days off = blank/empty or Vacation on weekdays
-                if weekday not in ("Saturday", "Sunday"):
+                # Weekend days off = blank (no F/Su or Sa call)
+                if weekday in ("Saturday", "Sunday"):
+                    if val_str == "" or val_str.lower() not in ("f/su", "sa"):
+                        days_off += 1
+                else:
+                    # Weekdays off = blank or Vacation
                     if val_str == "" or val_str.lower() == "vacation":
                         days_off += 1
                     if val_str.lower() == "vacation":
@@ -1624,6 +1628,7 @@ def compute_checks(schedule_df: pd.DataFrame, dailies: dict, roster_df: pd.DataF
                 # Count personal days anywhere
                 if val_str.lower() == "personal day":
                     personal_days += 1
+                    days_off += 1  # Personal days also count as days off
 
             days_off_by_block[block_name] = days_off
             # A vacation week is 5 consecutive vacation days (Mon-Fri)
