@@ -180,10 +180,11 @@ def show_table(df: pd.DataFrame, key: str, *, editable: bool, hide_index: bool=F
     if HAS_ARROW:
         if editable:
             # Build column config for dropdowns if specified
+            # Note: tuple columns (like in daily tables) can't be used as keys, so skip them
             column_config = {}
             if dropdown_columns and dropdown_options:
                 for col in dropdown_columns:
-                    if col in df.columns:
+                    if col in df.columns and not isinstance(col, tuple):
                         column_config[col] = st.column_config.SelectboxColumn(
                             col,
                             options=dropdown_options,
