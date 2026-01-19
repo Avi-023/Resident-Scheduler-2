@@ -1861,8 +1861,7 @@ with st.sidebar:
 
 if not HAS_ARROW:
     st.warning("Running in Lite mode (no pyarrow). Editable tables use CSV text areas; exports still work.")
-if not HAS_PULP:
-    st.info("Optional optimizer (PuLP) not detected. Install 'pulp' to enable ILP polish.")
+# PuLP warning removed - optimizer feature is hidden from UI
 
 with st.sidebar:
     st.markdown("### Academic Year")
@@ -2071,20 +2070,52 @@ with tabs[0]:
             edited = show_table(yearly_edit, "yearly_editor", editable=True, hide_index=True,
                               index_name_hint="Resident", dropdown_columns=block_columns,
                               dropdown_options=ROTATION_OPTIONS)
-            if st.button("Apply Yearly edits → rebuild Daily / Checks / Export"):
-                new_yearly = edited.set_index("Resident") if "Resident" in edited.columns else edited.copy()
-                if target != "(all)":
-                    full = schedule_df.copy()
-                    full.loc[new_yearly.index, :] = new_yearly.values
-                    new_yearly = full
-                st.session_state.schedule_df = new_yearly
-                new_dailies = build_dailies_from_yearly(new_yearly, ay_start)
-                if st.session_state.auto_call:
-                    auto_assign_weekend_call(new_dailies, new_yearly, ay_start, constraints, roster_df_ss)
-                st.session_state.dailies = new_dailies
-                st.session_state.schedule_df_effective = None
-                st.success("Applied Yearly edits.")
-                st.rerun()
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Apply Yearly edits → rebuild Daily / Checks / Export"):
+                    new_yearly = edited.set_index("Resident") if "Resident" in edited.columns else edited.copy()
+                    if target != "(all)":
+                        full = schedule_df.copy()
+                        full.loc[new_yearly.index, :] = new_yearly.values
+                        new_yearly = full
+                    st.session_state.schedule_df = new_yearly
+                    new_dailies = build_dailies_from_yearly(new_yearly, ay_start)
+                    if st.session_state.auto_call:
+                        auto_assign_weekend_call(new_dailies, new_yearly, ay_start, constraints, roster_df_ss)
+                    st.session_state.dailies = new_dailies
+                    st.session_state.schedule_df_effective = None
+                    st.success("Applied Yearly edits.")
+                    st.rerun()
+            with col2:
+                if st.button("Re-balance schedule (keep Pittsburgh/Elective, adjust others)"):
+                    new_yearly = edited.set_index("Resident") if "Resident" in edited.columns else edited.copy()
+                    if target != "(all)":
+                        full = schedule_df.copy()
+                        full.loc[new_yearly.index, :] = new_yearly.values
+                        new_yearly = full
+
+                    # Create base_fixed with only Pittsburgh, Elective, and Vacation (manually entered rotations to keep)
+                    # Clear other cells so the scheduler can re-balance them
+                    base_fixed = new_yearly.copy()
+                    keep_rotations = {"Pittsburgh", "Elective", "Vacation"}
+                    for col in base_fixed.columns:
+                        for idx in base_fixed.index:
+                            val = str(base_fixed.loc[idx, col]).strip()
+                            if val not in keep_rotations:
+                                base_fixed.loc[idx, col] = ""
+
+                    # Re-run scheduler with base_fixed to fill in other rotations fairly
+                    rebalanced = auto_generate_yearly(roster_df_ss.copy(), ay_start, constraints, base_fixed=base_fixed)
+                    new_dailies = build_dailies_from_yearly(rebalanced, ay_start)
+                    if st.session_state.auto_call:
+                        auto_assign_weekend_call(new_dailies, rebalanced, ay_start, constraints, roster_df_ss)
+
+                    st.session_state.schedule_df = rebalanced
+                    st.session_state.dailies = new_dailies
+                    st.session_state.schedule_df_effective = None
+                    st.success("Re-balanced schedule (kept Pittsburgh/Elective/Vacation, adjusted others).")
+                    st.rerun()
         else:
             vis = view_df.reset_index().rename(columns={"index":"Resident"})
             cols = vis.columns[1:]
