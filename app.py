@@ -2697,3 +2697,50 @@ with tabs[3]:
 - Rotations are consolidated into multi-day events when consecutive
 - Events include categories for easy filtering
                 """)
+
+            # Calendar Subscriptions Section
+            st.markdown("---")
+            st.markdown("#### 🔄 Calendar Subscriptions (Auto-Updating)")
+            st.caption("Residents can subscribe to these URLs - their calendars will update automatically when you change the schedule.")
+
+            st.markdown("**Subscription URLs for each resident:**")
+
+            # Generate subscription URLs table
+            sub_data = []
+            for resident in export_residents:
+                safe_name = re.sub(r'[^\w\s-]', '', resident).strip().replace(' ', '_')
+                sub_url = f"/Calendar_Feed?resident={safe_name}"
+                sub_data.append({"Resident": resident, "Subscription URL": sub_url})
+
+            sub_df = pd.DataFrame(sub_data)
+            st.dataframe(sub_df, use_container_width=True, hide_index=True)
+
+            st.page_link("pages/1_📅_Calendar_Feed.py", label="📅 Open Calendar Feed Page", icon="🔗")
+
+            with st.expander("How residents subscribe to calendar updates"):
+                st.markdown("""
+**For Residents - How to Subscribe:**
+
+1. **Get your URL** from the table above (ask your admin for the full app URL)
+2. **Full URL format:** `https://your-app.streamlit.app/Calendar_Feed?resident=Your_Name`
+
+**Google Calendar:**
+1. Open [calendar.google.com](https://calendar.google.com)
+2. Click **+** next to "Other calendars" → **From URL**
+3. Paste your subscription URL
+4. Click **Add calendar**
+5. ✅ Your calendar will auto-update every 12-24 hours
+
+**Microsoft Outlook:**
+1. Go to Calendar → **Add calendar** → **Subscribe from web**
+2. Paste your subscription URL
+3. Click **Import**
+
+**Apple Calendar:**
+1. File → **New Calendar Subscription**
+2. Paste your subscription URL
+3. Set refresh frequency (Auto, Every day, etc.)
+4. Click **Subscribe**
+
+**Note:** Updates aren't instant - calendar apps refresh every few hours to few days depending on the app.
+                """)
