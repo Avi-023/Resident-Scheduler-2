@@ -2627,10 +2627,10 @@ with tabs[3]:
             st.download_button("⬇️ Download Amion-style CSV (.csv)", data=csv_bytes,
                                file_name="ResidentSchedule_26-27_Amion.csv", mime="text/csv")
 
-        # Calendar exports
+        # Calendar Subscriptions Section
         st.markdown("---")
-        st.markdown("#### Calendar Exports (.ics)")
-        st.caption("Download calendar files to import into Google Calendar, Outlook, Apple Calendar, or any other calendar app.")
+        st.markdown("#### 📅 Calendar Subscriptions (Auto-Updating)")
+        st.caption("Residents subscribe to a URL - their calendars update automatically when you change the schedule.")
 
         export_dailies = st.session_state.get("dailies", {})
         if export_dailies:
@@ -2639,69 +2639,6 @@ with tabs[3]:
             for df in export_dailies.values():
                 export_residents.update(df.index)
             export_residents = sorted([r for r in export_residents if isinstance(r, str) and r.strip() and r.lower() != "none"])
-
-            # Bulk download option
-            st.markdown("**All Residents (ZIP)**")
-            zip_bytes = generate_all_ics_zip(export_dailies, base_yearly)
-            st.download_button(
-                "⬇️ Download All Calendars (.zip)",
-                data=zip_bytes,
-                file_name="ResidentSchedules_26-27_Calendars.zip",
-                mime="application/zip",
-                help="ZIP file containing individual .ics files for each resident"
-            )
-
-            # Individual resident downloads
-            st.markdown("**Individual Resident Calendars**")
-            selected_resident = st.selectbox(
-                "Select resident for individual download:",
-                options=export_residents,
-                key="ics_resident_select"
-            )
-
-            if selected_resident:
-                ics_bytes = generate_ics_for_resident(selected_resident, export_dailies, base_yearly)
-                safe_name = re.sub(r'[^\w\s-]', '', selected_resident).strip().replace(' ', '_')
-                st.download_button(
-                    f"⬇️ Download {selected_resident}'s Calendar (.ics)",
-                    data=ics_bytes,
-                    file_name=f"{safe_name}_schedule.ics",
-                    mime="text/calendar",
-                    help=f"Calendar file for {selected_resident} - import into any calendar app"
-                )
-
-            # Instructions
-            with st.expander("How to import calendar files"):
-                st.markdown("""
-**Google Calendar:**
-1. Go to [calendar.google.com](https://calendar.google.com)
-2. Click the gear icon → Settings
-3. Select "Import & export" from the left menu
-4. Click "Select file from your computer" and choose the .ics file
-5. Select the calendar to add events to, then click "Import"
-
-**Microsoft Outlook:**
-1. Open Outlook and go to Calendar
-2. Click File → Open & Export → Import/Export
-3. Select "Import an iCalendar (.ics) file"
-4. Choose the downloaded .ics file
-5. Select "Import" to add to your calendar
-
-**Apple Calendar (macOS/iOS):**
-1. Double-click the .ics file, or
-2. File → Import → select the .ics file
-3. Choose which calendar to add events to
-
-**Tips:**
-- Call assignments (F/Su, Sa) appear with a 📞 icon
-- Rotations are consolidated into multi-day events when consecutive
-- Events include categories for easy filtering
-                """)
-
-            # Calendar Subscriptions Section
-            st.markdown("---")
-            st.markdown("#### 🔄 Calendar Subscriptions (Auto-Updating)")
-            st.caption("Residents can subscribe to these URLs - their calendars will update automatically when you change the schedule.")
 
             st.markdown("**Subscription URLs for each resident:**")
 
