@@ -2208,10 +2208,6 @@ with st.sidebar:
     st.text_input("Pittsburgh block blacklist (comma-separated indices 0–12)", value="", key="pgh_block_blacklist_txt")
     st.caption("Planner assigns **3 consecutive blocks** for **all PGY-3 residents** (capacity 1 per block), avoiding **late Jan (Jan 16–31)**.")
 
-    st.markdown("**Elig. calendars JSON (per service)**")
-    st.text_area("Example: {\"Vascular\": {\"PGY-1\": [0,1], \"names\": {\"Jane Doe\": [3]}}}",
-                 value="", key="eligibility_calendars_json")
-
     st.markdown("**Weekend Call – Exclude these rotations**")
     st.multiselect(
         "Excluded from weekend call (may override as last resort)",
@@ -2312,13 +2308,6 @@ def generate_schedule_from_roster():
     except Exception:
         blk_list = []
 
-    try:
-        elig_json = st.session_state.eligibility_calendars_json.strip()
-        eligibility_calendars = json.loads(elig_json) if elig_json else {}
-    except Exception as e:
-        st.warning(f"Eligibility calendars JSON invalid: {e}")
-        eligibility_calendars = {}
-
     constraints = {
         "gold_cap": st.session_state.gold_cap,
         "rg_cap": st.session_state.rg_cap,
@@ -2328,7 +2317,7 @@ def generate_schedule_from_roster():
         "enable_pittsburgh": True,
         "pg3_pittsburgh": True,
         "pgh_block_blacklist": blk_list,
-        "eligibility_calendars": eligibility_calendars,
+        "eligibility_calendars": {},
         "random_seed": st.session_state.random_seed,
     }
     st.session_state.roster_df = roster_norm.copy()
