@@ -1992,6 +1992,161 @@ def to_amion_csv(dailies) -> bytes:
     pd.DataFrame(rows, columns=["Resident","Date","Assignment"]).to_csv(out, index=False)
     return out.getvalue().encode("utf-8")
 
+# --------------------------
+# ICS Calendar Generation
+# --------------------------
+def _ics_escape(text: str) -> str:
+    """Escape special characters for ICS format."""
+    if not text:
+        return ""
+    return text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+def _format_ics_date(d: date) -> str:
+    """Format date as ICS DATE value (YYYYMMDD)."""
+    return d.strftime("%Y%m%d")
+
+def _generate_uid(resident: str, date_str: str, assignment: str) -> str:
+    """Generate a unique ID for an event."""
+    import hashlib
+    content = f"{resident}-{date_str}-{assignment}"
+    return hashlib.md5(content.encode()).hexdigest()[:16] + "@resident-scheduler"
+
+def generate_ics_for_resident(resident: str, dailies: dict, schedule_df: pd.DataFrame = None) -> bytes:
+    """
+    Generate an ICS calendar file for a single resident.
+
+    Creates all-day events for each assignment (rotation, call, vacation, etc.)
+    """
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Resident Scheduler//Surgery Schedule//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        f"X-WR-CALNAME:{_ics_escape(resident)} - Surgery Schedule",
+    ]
+
+    # Track events to consolidate consecutive same-assignment days
+    events = []  # list of (start_date, end_date, assignment, is_call)
+
+    for block_name, df in dailies.items():
+        if resident not in df.index:
+            continue
+
+        for (weekday, dstr), val in df.loc[resident].items():
+            if not isinstance(val, str) or not val.strip():
+                continue
+            val = val.strip()
+            if not val:
+                continue
+
+            # Parse date string (MM/DD/YYYY)
+            try:
+                parts = dstr.split("/")
+                m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
+                event_date = date(y, m, d)
+            except Exception:
+                continue
+
+            # Determine if this is a call assignment
+            is_call = val.lower() in ("f/su", "sa", "call")
+
+            events.append((event_date, val, is_call))
+
+    # Sort events by date
+    events.sort(key=lambda x: x[0])
+
+    # Consolidate consecutive days with same assignment (except calls)
+    consolidated = []
+    i = 0
+    while i < len(events):
+        start_date, assignment, is_call = events[i]
+
+        # Calls are always single-day events
+        if is_call:
+            consolidated.append((start_date, start_date, assignment, True))
+            i += 1
+            continue
+
+        # For rotations, find consecutive days with same assignment
+        end_date = start_date
+        j = i + 1
+        while j < len(events):
+            next_date, next_assign, next_is_call = events[j]
+            # Check if next day and same assignment (not a call)
+            if (next_date - end_date).days == 1 and next_assign == assignment and not next_is_call:
+                end_date = next_date
+                j += 1
+            else:
+                break
+
+        consolidated.append((start_date, end_date, assignment, False))
+        i = j
+
+    # Generate ICS events
+    now_stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+
+    for start_d, end_d, assignment, is_call in consolidated:
+        uid = _generate_uid(resident, start_d.isoformat(), assignment)
+
+        # For all-day events, DTEND should be the day AFTER the last day
+        dtend = end_d + timedelta(days=1)
+
+        # Create summary with call indicator
+        if is_call:
+            summary = f"📞 {assignment} Call"
+            description = f"Weekend call assignment: {assignment}"
+        else:
+            summary = assignment
+            description = f"Rotation: {assignment}"
+
+        # Add color hint in description based on rotation
+        color_hint = PALETTE.get(norm_label(assignment), "")
+        if color_hint:
+            description += f"\\nColor: {color_hint}"
+
+        lines.extend([
+            "BEGIN:VEVENT",
+            f"UID:{uid}",
+            f"DTSTAMP:{now_stamp}",
+            f"DTSTART;VALUE=DATE:{_format_ics_date(start_d)}",
+            f"DTEND;VALUE=DATE:{_format_ics_date(dtend)}",
+            f"SUMMARY:{_ics_escape(summary)}",
+            f"DESCRIPTION:{_ics_escape(description)}",
+        ])
+
+        # Add categories for filtering
+        if is_call:
+            lines.append("CATEGORIES:Call,Weekend")
+        else:
+            lines.append(f"CATEGORIES:Rotation,{_ics_escape(assignment)}")
+
+        lines.append("END:VEVENT")
+
+    lines.append("END:VCALENDAR")
+
+    # ICS requires CRLF line endings
+    return "\r\n".join(lines).encode("utf-8")
+
+def generate_all_ics_zip(dailies: dict, schedule_df: pd.DataFrame = None) -> bytes:
+    """Generate a ZIP file containing ICS files for all residents."""
+    import zipfile
+
+    output = io.BytesIO()
+    residents = set()
+    for df in dailies.values():
+        residents.update(df.index)
+    residents = sorted([r for r in residents if isinstance(r, str) and r.strip() and r.lower() != "none"])
+
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for resident in residents:
+            ics_data = generate_ics_for_resident(resident, dailies, schedule_df)
+            # Sanitize filename
+            safe_name = re.sub(r'[^\w\s-]', '', resident).strip().replace(' ', '_')
+            zf.writestr(f"{safe_name}_schedule.ics", ics_data)
+
+    return output.getvalue()
+
 # =========================
 # Streamlit UI
 # =========================
@@ -2458,10 +2613,87 @@ with tabs[3]:
             st.markdown("**Amion CSV Lint**"); st.dataframe(lint, use_container_width=True, hide_index=True)
 
         checks_now = compute_checks(base_yearly, st.session_state.get("dailies", {}), roster_df_ss, constraints, ay_start)
-        xlsx_bytes = to_excel(base_yearly, st.session_state.get("dailies", {}), checks_now)
-        st.download_button("⬇️ Download Excel (.xlsx)", data=xlsx_bytes,
-                           file_name="ResidentSchedule_26-27_Editable.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        csv_bytes = to_amion_csv(st.session_state.get("dailies", {}))
-        st.download_button("⬇️ Download Amion-style CSV (.csv)", data=csv_bytes,
-                           file_name="ResidentSchedule_26-27_Amion.csv", mime="text/csv")
+
+        # Spreadsheet exports
+        st.markdown("#### Spreadsheet Exports")
+        col_xlsx, col_csv = st.columns(2)
+        with col_xlsx:
+            xlsx_bytes = to_excel(base_yearly, st.session_state.get("dailies", {}), checks_now)
+            st.download_button("⬇️ Download Excel (.xlsx)", data=xlsx_bytes,
+                               file_name="ResidentSchedule_26-27_Editable.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        with col_csv:
+            csv_bytes = to_amion_csv(st.session_state.get("dailies", {}))
+            st.download_button("⬇️ Download Amion-style CSV (.csv)", data=csv_bytes,
+                               file_name="ResidentSchedule_26-27_Amion.csv", mime="text/csv")
+
+        # Calendar exports
+        st.markdown("---")
+        st.markdown("#### Calendar Exports (.ics)")
+        st.caption("Download calendar files to import into Google Calendar, Outlook, Apple Calendar, or any other calendar app.")
+
+        export_dailies = st.session_state.get("dailies", {})
+        if export_dailies:
+            # Get list of residents
+            export_residents = set()
+            for df in export_dailies.values():
+                export_residents.update(df.index)
+            export_residents = sorted([r for r in export_residents if isinstance(r, str) and r.strip() and r.lower() != "none"])
+
+            # Bulk download option
+            st.markdown("**All Residents (ZIP)**")
+            zip_bytes = generate_all_ics_zip(export_dailies, base_yearly)
+            st.download_button(
+                "⬇️ Download All Calendars (.zip)",
+                data=zip_bytes,
+                file_name="ResidentSchedules_26-27_Calendars.zip",
+                mime="application/zip",
+                help="ZIP file containing individual .ics files for each resident"
+            )
+
+            # Individual resident downloads
+            st.markdown("**Individual Resident Calendars**")
+            selected_resident = st.selectbox(
+                "Select resident for individual download:",
+                options=export_residents,
+                key="ics_resident_select"
+            )
+
+            if selected_resident:
+                ics_bytes = generate_ics_for_resident(selected_resident, export_dailies, base_yearly)
+                safe_name = re.sub(r'[^\w\s-]', '', selected_resident).strip().replace(' ', '_')
+                st.download_button(
+                    f"⬇️ Download {selected_resident}'s Calendar (.ics)",
+                    data=ics_bytes,
+                    file_name=f"{safe_name}_schedule.ics",
+                    mime="text/calendar",
+                    help=f"Calendar file for {selected_resident} - import into any calendar app"
+                )
+
+            # Instructions
+            with st.expander("How to import calendar files"):
+                st.markdown("""
+**Google Calendar:**
+1. Go to [calendar.google.com](https://calendar.google.com)
+2. Click the gear icon → Settings
+3. Select "Import & export" from the left menu
+4. Click "Select file from your computer" and choose the .ics file
+5. Select the calendar to add events to, then click "Import"
+
+**Microsoft Outlook:**
+1. Open Outlook and go to Calendar
+2. Click File → Open & Export → Import/Export
+3. Select "Import an iCalendar (.ics) file"
+4. Choose the downloaded .ics file
+5. Select "Import" to add to your calendar
+
+**Apple Calendar (macOS/iOS):**
+1. Double-click the .ics file, or
+2. File → Import → select the .ics file
+3. Choose which calendar to add events to
+
+**Tips:**
+- Call assignments (F/Su, Sa) appear with a 📞 icon
+- Rotations are consolidated into multi-day events when consecutive
+- Events include categories for easy filtering
+                """)
