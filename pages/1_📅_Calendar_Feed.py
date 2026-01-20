@@ -11,20 +11,42 @@ Calendar apps will periodically fetch this URL to get updates.
 import streamlit as st
 import re
 import time
+import pickle
 from datetime import date, timedelta
+from pathlib import Path
 
 st.set_page_config(page_title="Calendar Feed", page_icon="📅", layout="centered")
 
-# Get query parameters
-params = st.query_params
+# --------------------------
+# Load schedule from cache file
+# --------------------------
+SCHEDULE_CACHE_FILE = Path(__file__).parent.parent / ".schedule_cache.pkl"
 
-# Check if this is a calendar subscription request
-resident_param = params.get("resident", None)
-download_mode = params.get("download", None)
+def load_schedule_from_cache():
+    """Load schedule data from file."""
+    try:
+        if SCHEDULE_CACHE_FILE.exists():
+            with open(SCHEDULE_CACHE_FILE, "rb") as f:
+                return pickle.load(f)
+    except Exception as e:
+        st.error(f"Error loading schedule: {e}")
+    return None
 
-def get_resident_list():
-    """Get list of residents from stored dailies."""
-    dailies = st.session_state.get("dailies", {})
+def get_cached_dailies():
+    """Get dailies from cache or session state."""
+    # First try session state
+    if st.session_state.get("dailies"):
+        return st.session_state.get("dailies"), st.session_state.get("schedule_df")
+
+    # Fall back to cache file
+    cached = load_schedule_from_cache()
+    if cached:
+        return cached.get("dailies", {}), cached.get("schedule_df")
+
+    return {}, None
+
+def get_resident_list(dailies):
+    """Get list of residents from dailies."""
     if not dailies:
         return []
     residents = set()
@@ -41,7 +63,6 @@ def url_safe_name(name: str) -> str:
     return re.sub(r'[^\w\s-]', '', name).strip().replace(' ', '_')
 
 # Import calendar generation from main app
-# We need to access the functions from app.py
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -49,27 +70,44 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from app import generate_ics_for_resident, PALETTE, norm_label
     HAS_APP = True
-except ImportError:
+except ImportError as e:
     HAS_APP = False
+    st.error(f"Could not import from app: {e}")
+
+# Get query parameters
+params = st.query_params
+resident_param = params.get("resident", None)
+
+# Load schedule data
+dailies, schedule_df = get_cached_dailies()
+residents = get_resident_list(dailies)
 
 if resident_param and HAS_APP:
     # Direct calendar request - serve ICS content
     resident_name = normalize_resident_name(resident_param)
-    dailies = st.session_state.get("dailies", {})
-    schedule_df = st.session_state.get("schedule_df", None)
 
-    if dailies and resident_name in get_resident_list():
+    # Try to find resident with case-insensitive match
+    matched_resident = None
+    for r in residents:
+        if url_safe_name(r).lower() == resident_param.lower() or r.lower() == resident_name.lower():
+            matched_resident = r
+            break
+
+    if matched_resident and dailies:
         # Generate ICS content
-        ics_bytes = generate_ics_for_resident(resident_name, dailies, schedule_df)
+        ics_bytes = generate_ics_for_resident(matched_resident, dailies, schedule_df)
 
-        st.title(f"📅 {resident_name}'s Calendar")
+        st.title(f"📅 {matched_resident}'s Calendar")
         st.success("✅ Calendar feed is active!")
 
         # Show last updated time
-        st.caption(f"Last updated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        cached = load_schedule_from_cache()
+        if cached and "saved_at" in cached:
+            saved_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(cached["saved_at"]))
+            st.caption(f"Schedule last updated: {saved_time}")
 
         # Download button
-        safe_name = url_safe_name(resident_name)
+        safe_name = url_safe_name(matched_resident)
         st.download_button(
             "⬇️ Download Calendar (.ics)",
             data=ics_bytes,
@@ -87,55 +125,58 @@ if resident_param and HAS_APP:
         st.markdown("---")
         st.markdown("### 📱 How to Subscribe")
 
-        # Get the current URL for subscription
-        try:
-            # This gets the base URL of the app
-            app_url = st.session_state.get("_app_url", "https://your-app.streamlit.app")
-        except:
-            app_url = "https://your-app.streamlit.app"
-
-        sub_url = f"{app_url}/Calendar_Feed?resident={safe_name}&download=ics"
-
         st.markdown(f"""
-**Your subscription URL:**
+**Your subscription URL path:**
 ```
-{sub_url}
+/Calendar_Feed?resident={safe_name}
+```
+
+**Full URL example:**
+```
+https://your-app.streamlit.app/Calendar_Feed?resident={safe_name}
 ```
 
 **Google Calendar:**
 1. Open [Google Calendar](https://calendar.google.com)
 2. Click the **+** next to "Other calendars" → **From URL**
-3. Paste the URL above
+3. Paste your full subscription URL
 4. Click **Add calendar**
 
 **Note:** Google Calendar refreshes subscribed calendars every 12-24 hours.
 
 **Outlook:**
 1. Go to Calendar → **Add calendar** → **Subscribe from web**
-2. Paste the URL above
+2. Paste your full subscription URL
 3. Click **Import**
 
 **Apple Calendar:**
 1. File → **New Calendar Subscription**
-2. Paste the URL above
+2. Paste your full subscription URL
 3. Click **Subscribe**
         """)
 
     else:
         st.error(f"❌ Resident '{resident_name}' not found.")
-        st.info("Make sure a schedule has been generated in the main app first.")
 
-        available = get_resident_list()
-        if available:
-            st.markdown("**Available residents:**")
-            for r in available:
-                st.write(f"- {r}")
+        if not dailies:
+            st.warning("⚠️ No schedule has been saved yet.")
+            st.info("""
+**To fix this:**
+1. Go to the main app (Yearly tab)
+2. Generate or update the schedule
+3. Come back here
+
+The schedule needs to be generated at least once before calendars are available.
+            """)
+        else:
+            st.info("Available residents:")
+            for r in residents:
+                safe = url_safe_name(r)
+                st.write(f"- {r} → `?resident={safe}`")
 
 else:
     # No specific resident requested - show selection UI
     st.title("📅 Calendar Subscription")
-
-    dailies = st.session_state.get("dailies", {})
 
     if not dailies:
         st.warning("⚠️ No schedule has been generated yet.")
@@ -146,11 +187,14 @@ else:
 3. Click **Generate schedule from roster**
 4. Come back here to get subscription URLs
         """)
-        st.page_link("app.py", label="← Go to Main App", icon="🏠")
     else:
-        st.success("✅ Schedule is available!")
+        st.success(f"✅ Schedule is available with {len(residents)} residents!")
 
-        residents = get_resident_list()
+        # Show last updated time
+        cached = load_schedule_from_cache()
+        if cached and "saved_at" in cached:
+            saved_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(cached["saved_at"]))
+            st.caption(f"Schedule last updated: {saved_time}")
 
         if residents:
             st.markdown("### Select a Resident")
@@ -166,13 +210,10 @@ else:
 
                 # Create the subscription URL
                 st.markdown("### 📎 Subscription URL")
-                sub_url = f"?resident={safe_name}"
-
-                st.code(sub_url, language=None)
+                st.code(f"?resident={safe_name}", language=None)
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    # Link to the calendar page with params
                     st.link_button(
                         "🔗 Open Calendar Page",
                         f"/Calendar_Feed?resident={safe_name}",
@@ -180,9 +221,7 @@ else:
                     )
 
                 with col2:
-                    # Direct download
                     if HAS_APP:
-                        schedule_df = st.session_state.get("schedule_df", None)
                         ics_bytes = generate_ics_for_resident(selected, dailies, schedule_df)
                         st.download_button(
                             "⬇️ Download .ics",

@@ -1,12 +1,42 @@
 # app.py
-import io, json, re, math, random, time
+import io, json, re, math, random, time, pickle, os
 from datetime import date, timedelta
 from collections import Counter, defaultdict
+from pathlib import Path
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import altair as alt
+
+# --------------------------
+# Data persistence for calendar sharing
+# --------------------------
+SCHEDULE_CACHE_FILE = Path(__file__).parent / ".schedule_cache.pkl"
+
+def save_schedule_to_cache(dailies: dict, schedule_df, roster_df):
+    """Save schedule data to file for access by calendar page."""
+    try:
+        data = {
+            "dailies": dailies,
+            "schedule_df": schedule_df,
+            "roster_df": roster_df,
+            "saved_at": time.time()
+        }
+        with open(SCHEDULE_CACHE_FILE, "wb") as f:
+            pickle.dump(data, f)
+    except Exception as e:
+        st.warning(f"Could not save schedule cache: {e}")
+
+def load_schedule_from_cache():
+    """Load schedule data from file."""
+    try:
+        if SCHEDULE_CACHE_FILE.exists():
+            with open(SCHEDULE_CACHE_FILE, "rb") as f:
+                return pickle.load(f)
+    except Exception:
+        pass
+    return None
 
 # --------------------------
 # Optional libraries
@@ -2338,6 +2368,7 @@ def generate_schedule_from_roster():
     st.session_state.dailies = dailies
     st.session_state.constraints = constraints
     st.session_state.schedule_df_effective = None
+    save_schedule_to_cache(dailies, yearly, roster_norm)
     st.rerun()
     return True
 
@@ -2407,6 +2438,7 @@ with tabs[0]:
                         auto_assign_weekend_call(new_dailies, new_yearly, ay_start, constraints, roster_df_ss)
                     st.session_state.dailies = new_dailies
                     st.session_state.schedule_df_effective = None
+                    save_schedule_to_cache(new_dailies, new_yearly, roster_df_ss)
                     st.success("Applied Yearly edits.")
                     st.rerun()
             with col2:
@@ -2439,6 +2471,7 @@ with tabs[0]:
                     st.session_state.schedule_df = rebalanced
                     st.session_state.dailies = new_dailies
                     st.session_state.schedule_df_effective = None
+                    save_schedule_to_cache(new_dailies, rebalanced, roster_df_ss)
                     st.success("Re-balanced schedule (kept Pittsburgh/Elective/Vacation, adjusted others).")
                     st.rerun()
         else:
@@ -2470,6 +2503,7 @@ with tabs[1]:
             st.session_state.dailies = new_dailies
             eff_yearly = effective_yearly_from_dailies(new_dailies, ay_start, list(schedule_df.index))
             st.session_state.schedule_df_effective = eff_yearly
+            save_schedule_to_cache(new_dailies, eff_yearly, roster_df_ss)
             st.success("Applied Daily edits and derived effective Yearly.")
     else:
         st.info("No schedule available yet. Generate a schedule in the Yearly tab first.")

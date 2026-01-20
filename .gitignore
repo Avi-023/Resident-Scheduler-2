@@ -25,3 +25,6 @@ Thumbs.db
 *.log
 .env
 .env.local
+
+# Schedule cache (generated at runtime)
+.schedule_cache.pkl
