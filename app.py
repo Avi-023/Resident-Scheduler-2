@@ -113,6 +113,235 @@ DAILY_OPTIONS = [
     "Sa",
 ]
 
+# --------------------------
+# Attending Physicians & Teams
+# --------------------------
+TEAMS = {
+    "Gold": ["Dr. Morrissey", "Dr. Sleet", "Dr. Dumire", "Dr. Silvis"],
+    "Red/Green": ["Dr. Duke", "Dr. Curfman"],
+    "Vascular": ["Dr. Tretter", "Dr. Dekornfeld"],
+    "Breast": ["Dr. Arlow"],
+}
+
+# Other specialties (not primary teams, but available for manual assignment)
+OTHER_SPECIALTIES = {
+    "Cardiothoracic": ["Dr. Sherwal", "Dr. Mavridis"],
+    "Plastic Surgery": ["Dr. Shayesteh", "Dr. Rollins"],
+    "Urology": ["Dr. Chason"],
+}
+
+ALL_ATTENDINGS = {}
+for team, docs in TEAMS.items():
+    for doc in docs:
+        ALL_ATTENDINGS[doc] = team
+for specialty, docs in OTHER_SPECIALTIES.items():
+    for doc in docs:
+        ALL_ATTENDINGS[doc] = specialty
+
+# --------------------------
+# ACGME General Surgery Defined Categories & Minimums
+# Based on ACGME/ABS requirements
+# --------------------------
+ACGME_CATEGORIES = {
+    # Main categories with subcategories
+    "ALIMENTARY TRACT": {
+        "minimum": 173,
+        "subcategories": {
+            "Esophagus": {"minimum": 5},
+            "Stomach": {"minimum": 9},
+            "Small Intestine": {"minimum": 17},
+            "Large Intestine": {"minimum": 36},
+            "Appendix": {"minimum": 30},
+            "Anorectal": {"minimum": 16},
+            "Liver": {"minimum": 5},
+            "Biliary": {"minimum": 30},
+            "Pancreas": {"minimum": 3},
+            "Spleen": {"minimum": 3},
+        }
+    },
+    "ABDOMEN": {
+        "minimum": 67,
+        "subcategories": {
+            "Hernia - Inguinal": {"minimum": 35},
+            "Hernia - Femoral": {"minimum": 0},
+            "Hernia - Ventral/Incisional": {"minimum": 20},
+            "Hernia - Other": {"minimum": 0},
+            "Abdominal Other": {"minimum": 0},
+        }
+    },
+    "BREAST": {
+        "minimum": 22,
+        "subcategories": {
+            "Biopsy/Partial Mastectomy": {"minimum": 0},
+            "Mastectomy": {"minimum": 0},
+            "Sentinel Node": {"minimum": 0},
+            "Axillary Dissection": {"minimum": 0},
+        }
+    },
+    "HEAD & NECK": {
+        "minimum": 12,
+        "subcategories": {
+            "Thyroid/Parathyroid": {"minimum": 0},
+            "Salivary Gland": {"minimum": 0},
+            "Neck Dissection": {"minimum": 0},
+            "Skin/Soft Tissue H&N": {"minimum": 0},
+        }
+    },
+    "ENDOCRINE": {
+        "minimum": 12,
+        "subcategories": {
+            "Thyroid": {"minimum": 0},
+            "Parathyroid": {"minimum": 0},
+            "Adrenal": {"minimum": 0},
+        }
+    },
+    "SKIN/SOFT TISSUE": {
+        "minimum": 24,
+        "subcategories": {
+            "Skin Lesion Excision": {"minimum": 0},
+            "Soft Tissue Tumor": {"minimum": 0},
+            "Wound Debridement": {"minimum": 0},
+        }
+    },
+    "VASCULAR": {
+        "minimum": 28,
+        "subcategories": {
+            "Carotid": {"minimum": 0},
+            "Aorta": {"minimum": 0},
+            "Visceral Vessels": {"minimum": 0},
+            "Lower Extremity Bypass": {"minimum": 0},
+            "Amputation": {"minimum": 0},
+            "Dialysis Access": {"minimum": 10},
+            "Vein (Varicose/DVT)": {"minimum": 0},
+            "Endovascular": {"minimum": 0},
+        }
+    },
+    "TRAUMA": {
+        "minimum": 40,
+        "subcategories": {
+            "Operative Trauma": {"minimum": 10},
+            "Non-operative Management": {"minimum": 40},
+        }
+    },
+    "SURGICAL CRITICAL CARE": {
+        "minimum": 40,
+        "subcategories": {
+            "Ventilatory Management": {"minimum": 1},
+            "Bleeding/Coagulopathy": {"minimum": 1},
+            "Hemodynamic Instability": {"minimum": 1},
+            "Organ Dysfunction/Failure": {"minimum": 1},
+            "Dysrhythmias": {"minimum": 1},
+            "Invasive Line Management": {"minimum": 1},
+            "Nutritional Support": {"minimum": 1},
+        }
+    },
+    "PEDIATRIC": {
+        "minimum": 10,
+        "subcategories": {}
+    },
+    "THORACIC": {
+        "minimum": 20,
+        "subcategories": {
+            "Chest Wall": {"minimum": 0},
+            "Lung/Pleura": {"minimum": 0},
+            "Mediastinum": {"minimum": 0},
+        }
+    },
+    "LAPAROSCOPIC/MINIMALLY INVASIVE": {
+        "minimum": 75,
+        "subcategories": {
+            "Lap Cholecystectomy": {"minimum": 0},
+            "Lap Appendectomy": {"minimum": 0},
+            "Lap Hernia": {"minimum": 0},
+            "Lap Colorectal": {"minimum": 0},
+            "Lap Other": {"minimum": 0},
+        }
+    },
+    "ENDOSCOPY": {
+        "minimum": 85,
+        "subcategories": {
+            "EGD": {"minimum": 35},
+            "Colonoscopy": {"minimum": 50},
+            "Bronchoscopy": {"minimum": 0},
+            "ERCP": {"minimum": 0},
+        }
+    },
+}
+
+# Total case minimum
+ACGME_TOTAL_MINIMUM = 850
+
+# Common CPT code to category mappings (subset - will expand)
+CPT_TO_CATEGORY = {
+    # Alimentary Tract - Appendix
+    "44950": ("ALIMENTARY TRACT", "Appendix"),  # Appendectomy
+    "44960": ("ALIMENTARY TRACT", "Appendix"),  # Appendectomy with abscess
+    "44970": ("ALIMENTARY TRACT", "Appendix"),  # Lap appendectomy
+
+    # Alimentary Tract - Biliary
+    "47562": ("ALIMENTARY TRACT", "Biliary"),   # Lap cholecystectomy
+    "47563": ("ALIMENTARY TRACT", "Biliary"),   # Lap cholecystectomy with cholangiography
+    "47600": ("ALIMENTARY TRACT", "Biliary"),   # Cholecystectomy
+    "47610": ("ALIMENTARY TRACT", "Biliary"),   # Cholecystectomy with exploration
+
+    # Alimentary Tract - Large Intestine
+    "44140": ("ALIMENTARY TRACT", "Large Intestine"),  # Colectomy, partial
+    "44141": ("ALIMENTARY TRACT", "Large Intestine"),  # Colectomy with colostomy
+    "44143": ("ALIMENTARY TRACT", "Large Intestine"),  # Colectomy with anastomosis
+    "44204": ("ALIMENTARY TRACT", "Large Intestine"),  # Lap colectomy, partial
+    "44207": ("ALIMENTARY TRACT", "Large Intestine"),  # Lap colectomy with anastomosis
+
+    # Alimentary Tract - Small Intestine
+    "44120": ("ALIMENTARY TRACT", "Small Intestine"),  # Enterectomy
+    "44121": ("ALIMENTARY TRACT", "Small Intestine"),  # Enterectomy, additional
+
+    # Alimentary Tract - Anorectal
+    "46255": ("ALIMENTARY TRACT", "Anorectal"),  # Hemorrhoidectomy
+    "46260": ("ALIMENTARY TRACT", "Anorectal"),  # Hemorrhoidectomy, complex
+    "46270": ("ALIMENTARY TRACT", "Anorectal"),  # Fistulotomy
+
+    # Hernia
+    "49505": ("ABDOMEN", "Hernia - Inguinal"),    # Inguinal hernia repair
+    "49507": ("ABDOMEN", "Hernia - Inguinal"),    # Inguinal hernia, incarcerated
+    "49520": ("ABDOMEN", "Hernia - Inguinal"),    # Inguinal hernia, recurrent
+    "49650": ("ABDOMEN", "Hernia - Inguinal"),    # Lap inguinal hernia repair
+    "49560": ("ABDOMEN", "Hernia - Ventral/Incisional"),  # Incisional hernia repair
+    "49565": ("ABDOMEN", "Hernia - Ventral/Incisional"),  # Incisional hernia, recurrent
+    "49652": ("ABDOMEN", "Hernia - Ventral/Incisional"),  # Lap ventral hernia repair
+    "49653": ("ABDOMEN", "Hernia - Ventral/Incisional"),  # Lap incisional hernia repair
+
+    # Breast
+    "19301": ("BREAST", "Biopsy/Partial Mastectomy"),  # Partial mastectomy
+    "19302": ("BREAST", "Biopsy/Partial Mastectomy"),  # Partial mastectomy with lymph node
+    "19303": ("BREAST", "Mastectomy"),            # Simple mastectomy
+    "19307": ("BREAST", "Mastectomy"),            # Modified radical mastectomy
+    "38525": ("BREAST", "Sentinel Node"),          # Sentinel node biopsy
+
+    # Endocrine
+    "60240": ("ENDOCRINE", "Thyroid"),            # Thyroidectomy
+    "60500": ("ENDOCRINE", "Parathyroid"),        # Parathyroidectomy
+    "60650": ("ENDOCRINE", "Adrenal"),            # Adrenalectomy, lap
+
+    # Vascular
+    "35301": ("VASCULAR", "Carotid"),             # Carotid endarterectomy
+    "36830": ("VASCULAR", "Dialysis Access"),     # AV fistula creation
+    "36832": ("VASCULAR", "Dialysis Access"),     # AV fistula revision
+    "36831": ("VASCULAR", "Dialysis Access"),     # AV graft
+
+    # Endoscopy
+    "43239": ("ENDOSCOPY", "EGD"),                # EGD with biopsy
+    "43235": ("ENDOSCOPY", "EGD"),                # EGD diagnostic
+    "45378": ("ENDOSCOPY", "Colonoscopy"),        # Colonoscopy diagnostic
+    "45380": ("ENDOSCOPY", "Colonoscopy"),        # Colonoscopy with biopsy
+    "45385": ("ENDOSCOPY", "Colonoscopy"),        # Colonoscopy with polypectomy
+
+    # Laparoscopic (also counted in primary category)
+    "47562": ("LAPAROSCOPIC/MINIMALLY INVASIVE", "Lap Cholecystectomy"),
+    "44970": ("LAPAROSCOPIC/MINIMALLY INVASIVE", "Lap Appendectomy"),
+    "49650": ("LAPAROSCOPIC/MINIMALLY INVASIVE", "Lap Hernia"),
+    "44204": ("LAPAROSCOPIC/MINIMALLY INVASIVE", "Lap Colorectal"),
+}
+
 def norm_label(v: str) -> str:
     if not isinstance(v, str) or not v.strip():
         return ""
@@ -2385,7 +2614,7 @@ def get_effective_yearly_for_checks():
     return None
 
 # Create tabs (always visible)
-tabs = st.tabs(["Yearly (editable)","Daily Blocks (editable)","Checks","Export"])
+tabs = st.tabs(["Yearly (editable)","Daily Blocks (editable)","Checks","Export","Case Logs","Weekly Schedule"])
 
 # Get schedule/dailies if they exist
 schedule_df = st.session_state.get("schedule_df", None)
@@ -2704,3 +2933,558 @@ with tabs[3]:
 
 **Note:** Updates aren't instant - calendar apps refresh every few hours to few days depending on the app.
                 """)
+
+# Case Logs tab
+with tabs[4]:
+    st.markdown("## 📊 ACGME Case Logs Dashboard")
+    st.caption("Upload case log exports from ACGME to track resident progress toward graduation requirements.")
+
+    # Initialize case log storage
+    if "case_logs" not in st.session_state:
+        st.session_state.case_logs = {}  # {resident_name: DataFrame of cases}
+
+    # File upload section
+    with st.expander("📤 Upload Case Log Data", expanded=not st.session_state.case_logs):
+        st.markdown("""
+**How to export from ACGME:**
+1. Log into [ACGME ADS](https://apps.acgme.org/connect/login)
+2. Go to **Case Logs** → **Download/Reports**
+3. Select the resident(s) and click **Excel**
+4. Upload the Excel file below
+        """)
+
+        uploaded_file = st.file_uploader(
+            "Upload ACGME Case Log Export (Excel/CSV)",
+            type=["xlsx", "xls", "csv"],
+            key="case_log_upload"
+        )
+
+        if uploaded_file:
+            try:
+                if uploaded_file.name.endswith('.csv'):
+                    df = pd.read_csv(uploaded_file)
+                else:
+                    df = pd.read_excel(uploaded_file)
+
+                st.success(f"✅ Loaded {len(df)} case records")
+
+                # Try to identify the resident column and CPT column
+                df.columns = df.columns.str.strip()
+                possible_resident_cols = [c for c in df.columns if any(x in c.lower() for x in ['resident', 'name', 'trainee'])]
+                possible_cpt_cols = [c for c in df.columns if any(x in c.lower() for x in ['cpt', 'code', 'procedure'])]
+
+                resident_col = st.selectbox("Select Resident column:", options=df.columns.tolist(),
+                                           index=df.columns.tolist().index(possible_resident_cols[0]) if possible_resident_cols else 0)
+                cpt_col = st.selectbox("Select CPT Code column:", options=df.columns.tolist(),
+                                       index=df.columns.tolist().index(possible_cpt_cols[0]) if possible_cpt_cols else 0)
+
+                # Optional: role column (Surgeon, First Assist, Teaching Assist)
+                role_col = st.selectbox("Select Role column (optional):", options=["(None)"] + df.columns.tolist())
+
+                if st.button("Import Cases"):
+                    # Group by resident
+                    for resident in df[resident_col].unique():
+                        if pd.isna(resident) or str(resident).strip() == "":
+                            continue
+                        resident_df = df[df[resident_col] == resident].copy()
+                        if resident not in st.session_state.case_logs:
+                            st.session_state.case_logs[resident] = resident_df
+                        else:
+                            # Merge/append
+                            st.session_state.case_logs[resident] = pd.concat(
+                                [st.session_state.case_logs[resident], resident_df]
+                            ).drop_duplicates()
+
+                    st.success(f"✅ Imported cases for {len(df[resident_col].unique())} residents")
+                    st.rerun()
+
+            except Exception as e:
+                st.error(f"Error reading file: {e}")
+
+        # Manual entry option
+        st.markdown("---")
+        st.markdown("**Or enter cases manually:**")
+
+        manual_cols = st.columns([2, 1, 2, 1])
+        with manual_cols[0]:
+            manual_resident = st.selectbox("Resident:", options=[""] + list(st.session_state.roster_table["Resident"].dropna().unique()),
+                                          key="manual_case_resident")
+        with manual_cols[1]:
+            manual_cpt = st.text_input("CPT Code:", key="manual_case_cpt")
+        with manual_cols[2]:
+            manual_desc = st.text_input("Description:", key="manual_case_desc")
+        with manual_cols[3]:
+            manual_role = st.selectbox("Role:", ["Surgeon", "First Assist", "Teaching Assist"], key="manual_case_role")
+
+        if st.button("Add Case Manually"):
+            if manual_resident and manual_cpt:
+                new_case = pd.DataFrame([{
+                    "Resident": manual_resident,
+                    "CPT": manual_cpt,
+                    "Description": manual_desc,
+                    "Role": manual_role,
+                    "Date": date.today().isoformat()
+                }])
+                if manual_resident not in st.session_state.case_logs:
+                    st.session_state.case_logs[manual_resident] = new_case
+                else:
+                    st.session_state.case_logs[manual_resident] = pd.concat(
+                        [st.session_state.case_logs[manual_resident], new_case],
+                        ignore_index=True
+                    )
+                st.success(f"Added case for {manual_resident}")
+                st.rerun()
+
+    # Dashboard display
+    if st.session_state.case_logs:
+        st.markdown("---")
+        st.markdown("### 📈 Case Log Progress by Resident")
+
+        # Resident selector
+        all_residents = sorted(st.session_state.case_logs.keys())
+        selected_resident = st.selectbox("Select Resident:", options=["(All Residents)"] + all_residents,
+                                         key="case_log_resident_view")
+
+        def count_cases_by_category(cases_df):
+            """Count cases by ACGME category."""
+            counts = {cat: {"total": 0, "subcategories": {}} for cat in ACGME_CATEGORIES}
+
+            # Try to find CPT column
+            cpt_col = None
+            for c in cases_df.columns:
+                if 'cpt' in c.lower() or 'code' in c.lower():
+                    cpt_col = c
+                    break
+
+            if cpt_col is None:
+                return counts
+
+            for _, row in cases_df.iterrows():
+                cpt = str(row.get(cpt_col, "")).strip()
+                if cpt in CPT_TO_CATEGORY:
+                    cat, subcat = CPT_TO_CATEGORY[cpt]
+                    if cat in counts:
+                        counts[cat]["total"] += 1
+                        if subcat not in counts[cat]["subcategories"]:
+                            counts[cat]["subcategories"][subcat] = 0
+                        counts[cat]["subcategories"][subcat] += 1
+
+            return counts
+
+        def render_progress_bar(current, minimum, label):
+            """Render a progress bar with color coding."""
+            if minimum == 0:
+                pct = 100 if current > 0 else 0
+            else:
+                pct = min(100, (current / minimum) * 100)
+
+            color = "#28a745" if pct >= 100 else "#ffc107" if pct >= 50 else "#dc3545"
+
+            st.markdown(f"""
+            <div style="margin-bottom: 8px;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                    <span>{label}</span>
+                    <span><b>{current}</b> / {minimum}</span>
+                </div>
+                <div style="background-color: #e0e0e0; border-radius: 4px; height: 20px;">
+                    <div style="background-color: {color}; width: {pct}%; height: 100%; border-radius: 4px;"></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        if selected_resident == "(All Residents)":
+            # Summary view for all residents
+            summary_data = []
+            for res in all_residents:
+                res_cases = st.session_state.case_logs[res]
+                total_cases = len(res_cases)
+                counts = count_cases_by_category(res_cases)
+                total_counted = sum(c["total"] for c in counts.values())
+
+                # Get PGY level from roster
+                roster_match = st.session_state.roster_table[
+                    st.session_state.roster_table["Resident"].str.strip() == res.strip()
+                ]
+                pgy = roster_match["PGY"].iloc[0] if not roster_match.empty else "?"
+
+                summary_data.append({
+                    "Resident": res,
+                    "PGY": pgy,
+                    "Total Cases": total_cases,
+                    "Categorized": total_counted,
+                    "Progress": f"{total_counted}/{ACGME_TOTAL_MINIMUM} ({total_counted/ACGME_TOTAL_MINIMUM*100:.0f}%)"
+                })
+
+            summary_df = pd.DataFrame(summary_data)
+            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+            # Bar chart of total cases by resident
+            if summary_data:
+                chart_df = pd.DataFrame(summary_data)
+                chart = alt.Chart(chart_df).mark_bar().encode(
+                    x=alt.X("Resident:N", sort="-y"),
+                    y=alt.Y("Total Cases:Q"),
+                    color=alt.Color("PGY:N")
+                ).properties(height=300, title="Total Cases by Resident")
+                st.altair_chart(chart, use_container_width=True)
+
+        else:
+            # Individual resident view
+            res_cases = st.session_state.case_logs[selected_resident]
+            counts = count_cases_by_category(res_cases)
+
+            st.markdown(f"### {selected_resident}")
+
+            # Total progress
+            total_counted = sum(c["total"] for c in counts.values())
+            st.markdown("#### Overall Progress")
+            render_progress_bar(total_counted, ACGME_TOTAL_MINIMUM, "Total Cases (as Surgeon)")
+
+            # Category breakdown
+            st.markdown("#### Progress by Category")
+
+            for cat, cat_data in ACGME_CATEGORIES.items():
+                minimum = cat_data["minimum"]
+                current = counts[cat]["total"]
+
+                with st.expander(f"{cat} ({current}/{minimum})", expanded=(current < minimum)):
+                    render_progress_bar(current, minimum, cat)
+
+                    # Subcategories
+                    if cat_data["subcategories"]:
+                        for subcat, sub_data in cat_data["subcategories"].items():
+                            sub_min = sub_data["minimum"]
+                            sub_cur = counts[cat]["subcategories"].get(subcat, 0)
+                            if sub_min > 0 or sub_cur > 0:
+                                render_progress_bar(sub_cur, sub_min, f"  └─ {subcat}")
+
+            # Raw data view
+            with st.expander("View Raw Case Data"):
+                st.dataframe(res_cases, use_container_width=True, hide_index=True)
+
+    else:
+        st.info("No case log data loaded. Upload an ACGME export or enter cases manually above.")
+
+# Weekly Schedule tab
+with tabs[5]:
+    st.markdown("## 🗓️ Weekly OR & Clinic Schedule")
+    st.caption("Manage the weekly surgery schedule and auto-assign residents to cases.")
+
+    # Initialize weekly schedule storage
+    if "weekly_schedule" not in st.session_state:
+        st.session_state.weekly_schedule = []  # List of case dicts
+
+    # Date selector
+    col_date1, col_date2 = st.columns(2)
+    with col_date1:
+        schedule_week_start = st.date_input("Week starting:", value=date.today() - timedelta(days=date.today().weekday()),
+                                            key="schedule_week_start")
+
+    st.markdown("---")
+
+    # Add case section
+    with st.expander("➕ Add Surgery / Clinic", expanded=True):
+        add_cols = st.columns([1, 1, 1, 2, 1])
+
+        with add_cols[0]:
+            case_date = st.date_input("Date:", value=schedule_week_start, key="new_case_date")
+        with add_cols[1]:
+            case_time = st.time_input("Time:", value=None, key="new_case_time")
+        with add_cols[2]:
+            case_type = st.selectbox("Type:", ["OR Case", "Clinic"], key="new_case_type")
+
+        # Attending selection grouped by team
+        all_attending_names = list(ALL_ATTENDINGS.keys())
+        with add_cols[3]:
+            case_attending = st.selectbox("Attending:", options=all_attending_names, key="new_case_attending")
+
+        with add_cols[4]:
+            attending_team = ALL_ATTENDINGS.get(case_attending, "Other")
+            st.text_input("Team:", value=attending_team, disabled=True, key="new_case_team_display")
+
+        # Case details
+        detail_cols = st.columns([2, 1, 2])
+        with detail_cols[0]:
+            case_procedure = st.text_input("Procedure/Description:", key="new_case_procedure")
+        with detail_cols[1]:
+            case_cpt = st.text_input("CPT Code (optional):", key="new_case_cpt")
+        with detail_cols[2]:
+            case_location = st.text_input("Location/Room:", key="new_case_location")
+
+        # Resident assignment
+        st.markdown("**Resident Assignment:**")
+        assign_cols = st.columns([1, 2, 2])
+
+        # Get residents on the relevant team this block
+        def get_residents_on_team(team_name):
+            """Get residents currently assigned to a team based on yearly schedule."""
+            residents = []
+            schedule_df = st.session_state.get("schedule_df", None)
+            if schedule_df is None:
+                return list(st.session_state.roster_table["Resident"].dropna().unique())
+
+            # Find current block
+            blocks = build_blocks(ay_start, 13)
+            current_block_idx = None
+            for i, (s, e) in enumerate(blocks):
+                if s <= case_date <= e:
+                    current_block_idx = i
+                    break
+
+            if current_block_idx is not None:
+                hdr = hdr_for_block(blocks[current_block_idx][0], blocks[current_block_idx][1])
+                if hdr in schedule_df.columns:
+                    team_norm = norm_label(team_name)
+                    for res in schedule_df.index:
+                        if norm_label(schedule_df.loc[res, hdr]) == team_norm:
+                            residents.append(res)
+
+            # If no residents found on team, return all
+            if not residents:
+                return list(st.session_state.roster_table["Resident"].dropna().unique())
+
+            return residents
+
+        team_residents = get_residents_on_team(attending_team)
+        all_residents_list = list(st.session_state.roster_table["Resident"].dropna().unique())
+
+        with assign_cols[0]:
+            auto_assign = st.checkbox("Auto-assign", value=True, key="new_case_auto_assign",
+                                     help="Automatically assign based on PGY level and case needs")
+
+        with assign_cols[1]:
+            primary_resident = st.selectbox("Primary Resident:",
+                                           options=["(Auto)"] + team_residents if auto_assign else all_residents_list,
+                                           key="new_case_primary_resident")
+
+        with assign_cols[2]:
+            secondary_resident = st.selectbox("Secondary Resident (optional):",
+                                             options=["(None)"] + all_residents_list,
+                                             key="new_case_secondary_resident")
+
+        if st.button("Add to Schedule", type="primary"):
+            new_case = {
+                "date": case_date.isoformat(),
+                "time": case_time.isoformat() if case_time else "",
+                "type": case_type,
+                "attending": case_attending,
+                "team": attending_team,
+                "procedure": case_procedure,
+                "cpt": case_cpt,
+                "location": case_location,
+                "primary_resident": primary_resident if primary_resident != "(Auto)" else "",
+                "secondary_resident": secondary_resident if secondary_resident != "(None)" else "",
+                "auto_assign": auto_assign
+            }
+            st.session_state.weekly_schedule.append(new_case)
+            st.success(f"Added: {case_procedure} with {case_attending}")
+            st.rerun()
+
+    # Upload Epic export option
+    with st.expander("📤 Upload Schedule (Epic Export)"):
+        st.markdown("""
+**How to export from Epic Reporting Workbench:**
+1. Run your OR Schedule report for the week
+2. Export as Excel
+3. Upload below
+        """)
+
+        epic_upload = st.file_uploader("Upload Epic Schedule Export:", type=["xlsx", "xls", "csv"],
+                                       key="epic_schedule_upload")
+
+        if epic_upload:
+            try:
+                if epic_upload.name.endswith('.csv'):
+                    epic_df = pd.read_csv(epic_upload)
+                else:
+                    epic_df = pd.read_excel(epic_upload)
+
+                st.success(f"✅ Loaded {len(epic_df)} rows")
+                st.dataframe(epic_df.head(), use_container_width=True)
+
+                # Column mapping
+                st.markdown("**Map columns:**")
+                map_cols = st.columns(4)
+                with map_cols[0]:
+                    epic_date_col = st.selectbox("Date column:", epic_df.columns.tolist(), key="epic_date_col")
+                with map_cols[1]:
+                    epic_proc_col = st.selectbox("Procedure column:", epic_df.columns.tolist(), key="epic_proc_col")
+                with map_cols[2]:
+                    epic_attending_col = st.selectbox("Attending column:", epic_df.columns.tolist(), key="epic_attending_col")
+                with map_cols[3]:
+                    epic_loc_col = st.selectbox("Location column:", ["(None)"] + epic_df.columns.tolist(), key="epic_loc_col")
+
+                if st.button("Import Schedule"):
+                    imported = 0
+                    for _, row in epic_df.iterrows():
+                        try:
+                            case_date_val = pd.to_datetime(row[epic_date_col]).date()
+                            attending_name = str(row[epic_attending_col]).strip()
+
+                            # Try to match attending
+                            matched_attending = None
+                            for att in ALL_ATTENDINGS:
+                                if att.lower() in attending_name.lower() or attending_name.lower() in att.lower():
+                                    matched_attending = att
+                                    break
+
+                            new_case = {
+                                "date": case_date_val.isoformat(),
+                                "time": "",
+                                "type": "OR Case",
+                                "attending": matched_attending or attending_name,
+                                "team": ALL_ATTENDINGS.get(matched_attending, "Other") if matched_attending else "Other",
+                                "procedure": str(row[epic_proc_col]),
+                                "cpt": "",
+                                "location": str(row[epic_loc_col]) if epic_loc_col != "(None)" else "",
+                                "primary_resident": "",
+                                "secondary_resident": "",
+                                "auto_assign": True
+                            }
+                            st.session_state.weekly_schedule.append(new_case)
+                            imported += 1
+                        except Exception:
+                            continue
+
+                    st.success(f"Imported {imported} cases")
+                    st.rerun()
+
+            except Exception as e:
+                st.error(f"Error reading file: {e}")
+
+    # Display current schedule
+    st.markdown("---")
+    st.markdown("### 📋 This Week's Schedule")
+
+    # Filter to current week
+    week_end = schedule_week_start + timedelta(days=6)
+    week_cases = [c for c in st.session_state.weekly_schedule
+                  if schedule_week_start <= date.fromisoformat(c["date"]) <= week_end]
+
+    if week_cases:
+        # Auto-assign residents to cases that need it
+        def auto_assign_resident_to_case(case_dict):
+            """Auto-assign resident based on PGY level and case needs."""
+            if case_dict.get("primary_resident") and case_dict["primary_resident"] != "(Auto)":
+                return case_dict["primary_resident"], case_dict.get("secondary_resident", "")
+
+            # Get residents on the team
+            team_residents = get_residents_on_team(case_dict["team"])
+            if not team_residents:
+                return "", ""
+
+            # Get case logs to check who needs what
+            cpt = case_dict.get("cpt", "")
+            case_category = None
+            if cpt and cpt in CPT_TO_CATEGORY:
+                case_category = CPT_TO_CATEGORY[cpt][0]
+
+            # Score residents: prioritize higher PGY who still need the case type
+            def score_resident(res):
+                # Get PGY level
+                roster_match = st.session_state.roster_table[
+                    st.session_state.roster_table["Resident"].str.strip() == res.strip()
+                ]
+                if roster_match.empty:
+                    return (0, 0)
+
+                pgy_str = roster_match["PGY"].iloc[0]
+                pgy_num = int(pgy_str.replace("PGY-", "")) if "PGY-" in str(pgy_str) else 0
+
+                # Check if they need this case type
+                need_score = 0
+                if case_category and res in st.session_state.case_logs:
+                    counts = count_cases_by_category(st.session_state.case_logs[res])
+                    if case_category in counts:
+                        minimum = ACGME_CATEGORIES.get(case_category, {}).get("minimum", 0)
+                        current = counts[case_category]["total"]
+                        if current < minimum:
+                            need_score = minimum - current  # Higher need = higher score
+
+                return (pgy_num, need_score)
+
+            # Sort by PGY (descending), then by need (descending)
+            scored = [(res, score_resident(res)) for res in team_residents]
+            scored.sort(key=lambda x: (x[1][0], x[1][1]), reverse=True)
+
+            primary = scored[0][0] if scored else ""
+
+            # For Teaching Assist (PGY-4+), can assign a junior too
+            secondary = ""
+            if len(scored) > 1 and scored[0][1][0] >= 4:  # PGY-4 or higher
+                # Find a junior who needs the case
+                juniors = [s for s in scored[1:] if s[1][0] < scored[0][1][0]]
+                if juniors:
+                    secondary = juniors[0][0]
+
+            return primary, secondary
+
+        # Group by date
+        from collections import defaultdict
+        by_date = defaultdict(list)
+        for case in week_cases:
+            by_date[case["date"]].append(case)
+
+        for case_date_str in sorted(by_date.keys()):
+            case_date_obj = date.fromisoformat(case_date_str)
+            day_name = case_date_obj.strftime("%A, %B %d")
+            st.markdown(f"#### {day_name}")
+
+            day_cases = by_date[case_date_str]
+            for i, case in enumerate(day_cases):
+                # Auto-assign if needed
+                if case.get("auto_assign") and not case.get("primary_resident"):
+                    primary, secondary = auto_assign_resident_to_case(case)
+                    case["primary_resident"] = primary
+                    case["secondary_resident"] = secondary
+
+                # Display case
+                time_str = case.get("time", "")
+                if time_str:
+                    time_display = f"**{time_str[:5]}**"
+                else:
+                    time_display = ""
+
+                col1, col2, col3, col4 = st.columns([1, 2, 2, 1])
+
+                with col1:
+                    st.write(time_display)
+                    st.caption(case.get("type", "OR"))
+
+                with col2:
+                    st.write(f"**{case.get('procedure', 'TBD')}**")
+                    st.caption(f"{case.get('attending', '')} ({case.get('team', '')})")
+
+                with col3:
+                    primary = case.get("primary_resident", "")
+                    secondary = case.get("secondary_resident", "")
+                    if primary:
+                        st.write(f"👨‍⚕️ **{primary}**")
+                        if secondary:
+                            st.caption(f"+ {secondary} (assist)")
+                    else:
+                        st.write("⚠️ *Unassigned*")
+
+                with col4:
+                    if st.button("❌", key=f"del_case_{case_date_str}_{i}"):
+                        st.session_state.weekly_schedule.remove(case)
+                        st.rerun()
+
+                st.markdown("---")
+
+        # Summary stats
+        st.markdown("### 📊 Week Summary")
+        total_or = len([c for c in week_cases if c["type"] == "OR Case"])
+        total_clinic = len([c for c in week_cases if c["type"] == "Clinic"])
+
+        sum_cols = st.columns(3)
+        with sum_cols[0]:
+            st.metric("OR Cases", total_or)
+        with sum_cols[1]:
+            st.metric("Clinic Sessions", total_clinic)
+        with sum_cols[2]:
+            assigned = len([c for c in week_cases if c.get("primary_resident")])
+            st.metric("Assigned", f"{assigned}/{len(week_cases)}")
+
+    else:
+        st.info("No cases scheduled for this week. Add cases above or upload an Epic export.")
