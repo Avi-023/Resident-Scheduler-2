@@ -139,6 +139,44 @@ for specialty, docs in OTHER_SPECIALTIES.items():
         ALL_ATTENDINGS[doc] = specialty
 
 # --------------------------
+# Clinic Coverage Rules
+# --------------------------
+CLINIC_RULES = {
+    "Gold": {
+        "covers_clinic": True,
+        "min_residents": 1,
+        "max_residents": 3,
+        "pgy5_half_day_only": True,
+        "cross_cover_from": ["Red/Green"],  # Can borrow from Red if needed
+    },
+    "Red/Green": {
+        "covers_clinic": True,
+        "min_residents": 1,
+        "max_residents": 3,
+        "pgy5_half_day_only": True,
+        "cross_cover_from": ["Gold"],  # Can borrow from Gold if needed
+    },
+    "Vascular": {
+        "covers_clinic": False,  # Residents do NOT cover vascular clinic
+    },
+    "Breast": {
+        "covers_clinic": True,
+        "min_residents": 1,
+        "max_residents": 1,
+        "daily_except_or": True,  # Every day except operative days
+        "pgy5_half_day_only": True,
+    },
+}
+
+# Attending-specific preferences
+ATTENDING_PREFERENCES = {
+    "Dr. Curfman": {
+        "clinic_residents_preferred": 2,  # Prefers 2-3 residents
+        "clinic_residents_max": 3,
+    },
+}
+
+# --------------------------
 # ACGME General Surgery Defined Categories & Minimums
 # Based on ACGME/ABS requirements
 # --------------------------
