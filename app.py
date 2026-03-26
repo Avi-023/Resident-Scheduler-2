@@ -113,6 +113,202 @@ try:
 except Exception:
     HAS_PULP = False
 
+try:
+    import pdfplumber
+    HAS_PDFPLUMBER = True
+except Exception:
+    HAS_PDFPLUMBER = False
+
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseDownload
+    HAS_GOOGLE_DRIVE = True
+except Exception:
+    HAS_GOOGLE_DRIVE = False
+
+# --------------------------
+# Google Drive Integration
+# --------------------------
+def get_google_drive_service():
+    """Get authenticated Google Drive service using Streamlit secrets."""
+    if not HAS_GOOGLE_DRIVE:
+        return None
+
+    try:
+        # Check if credentials are configured
+        if "google_drive" not in st.secrets:
+            return None
+
+        creds_dict = dict(st.secrets["google_drive"])
+        credentials = service_account.Credentials.from_service_account_info(
+            creds_dict,
+            scopes=['https://www.googleapis.com/auth/drive.readonly']
+        )
+        service = build('drive', 'v3', credentials=credentials, cache_discovery=False)
+        return service
+    except Exception as e:
+        st.warning(f"Google Drive connection failed: {e}")
+        return None
+
+def scan_google_drive_for_case_logs():
+    """Scan Google Drive folder for new ACGME case log files (PDF/Excel)."""
+    service = get_google_drive_service()
+    if not service:
+        return []
+
+    try:
+        # Get folder ID from secrets
+        folder_id = st.secrets.get("google_drive", {}).get("folder_id", "")
+        if not folder_id:
+            return []
+
+        # Load list of already processed files
+        processed_files = set()
+        if "processed_drive_files" not in st.session_state:
+            st.session_state.processed_drive_files = set()
+        processed_files = st.session_state.processed_drive_files
+
+        # Query for PDF and Excel files in the folder
+        query = f"'{folder_id}' in parents and (mimeType='application/pdf' or mimeType='application/vnd.ms-excel' or mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') and trashed=false"
+        results = service.files().list(
+            q=query,
+            fields="files(id, name, mimeType, modifiedTime)",
+            orderBy="modifiedTime desc"
+        ).execute()
+
+        files = results.get('files', [])
+        imported_files = []
+
+        for file_info in files:
+            file_id = file_info['id']
+            file_name = file_info['name']
+            mime_type = file_info['mimeType']
+
+            # Skip already processed files
+            if file_id in processed_files:
+                continue
+
+            try:
+                # Download file content
+                request = service.files().get_media(fileId=file_id)
+                file_buffer = io.BytesIO()
+                downloader = MediaIoBaseDownload(file_buffer, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+
+                file_buffer.seek(0)
+
+                # Parse based on file type
+                if mime_type == 'application/pdf':
+                    df = parse_acgme_pdf(file_buffer)
+                else:
+                    df = pd.read_excel(file_buffer)
+
+                if df is not None and not df.empty:
+                    imported_files.append((file_name, df))
+                    processed_files.add(file_id)
+
+            except Exception as e:
+                pass  # Skip files that can't be read
+
+        # Update session state
+        st.session_state.processed_drive_files = processed_files
+
+        return imported_files
+
+    except Exception as e:
+        st.warning(f"Error scanning Google Drive: {e}")
+        return []
+
+def parse_acgme_pdf(file_buffer):
+    """Parse ACGME case log PDF (Resident Minimum Defined Categories report)."""
+    if not HAS_PDFPLUMBER:
+        return None
+
+    try:
+        all_rows = []
+        with pdfplumber.open(file_buffer) as pdf:
+            for page in pdf.pages:
+                # Extract tables from the page
+                tables = page.extract_tables()
+                for table in tables:
+                    if table:
+                        all_rows.extend(table)
+
+        if not all_rows:
+            # Try extracting text and parsing manually
+            file_buffer.seek(0)
+            with pdfplumber.open(file_buffer) as pdf:
+                text_content = ""
+                for page in pdf.pages:
+                    text_content += page.extract_text() or ""
+                return parse_acgme_text(text_content)
+
+        # Convert to DataFrame
+        # Find header row (contains "Category" or "Minimum")
+        header_idx = 0
+        for i, row in enumerate(all_rows):
+            if row and any(cell and ('category' in str(cell).lower() or 'minimum' in str(cell).lower()) for cell in row):
+                header_idx = i
+                break
+
+        headers = all_rows[header_idx] if header_idx < len(all_rows) else all_rows[0]
+        data_rows = all_rows[header_idx + 1:]
+
+        # Clean headers
+        headers = [str(h).strip() if h else f"Col_{i}" for i, h in enumerate(headers)]
+
+        df = pd.DataFrame(data_rows, columns=headers)
+        return df
+
+    except Exception as e:
+        return None
+
+def parse_acgme_text(text_content):
+    """Parse ACGME text content when table extraction fails."""
+    if not text_content:
+        return None
+
+    lines = text_content.strip().split('\n')
+    data = []
+    current_category = None
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # Try to parse lines with format: "Category Name    Minimum    Count"
+        # Split by multiple spaces
+        parts = re.split(r'\s{2,}', line)
+        if len(parts) >= 2:
+            # Check if last parts are numbers
+            try:
+                nums = []
+                text_parts = []
+                for p in parts:
+                    p = p.strip()
+                    if p.replace(',', '').isdigit():
+                        nums.append(int(p.replace(',', '')))
+                    else:
+                        text_parts.append(p)
+
+                if nums and text_parts:
+                    category = ' '.join(text_parts)
+                    data.append({
+                        'Category': category,
+                        'Minimum': nums[0] if len(nums) > 0 else 0,
+                        'Count': nums[1] if len(nums) > 1 else nums[0]
+                    })
+            except:
+                pass
+
+    if data:
+        return pd.DataFrame(data)
+    return None
+
 # --------------------------
 # Colors & styling
 # --------------------------
@@ -3119,7 +3315,13 @@ with tabs[3]:
 # Case Logs tab
 with tabs[4]:
     st.markdown("## 📊 ACGME Case Logs Dashboard")
-    st.caption("Drop case log exports into the watch folder for automatic import.")
+
+    # Check if Google Drive is configured
+    drive_configured = HAS_GOOGLE_DRIVE and "google_drive" in st.secrets
+    if drive_configured:
+        st.caption("📧 Email case logs to your inbox → auto-imported from Google Drive")
+    else:
+        st.caption("Drop case log exports into the watch folder for automatic import.")
 
     # Initialize case log storage from cache
     # case_logs stores summary data: {resident: {category: {"total": N, "minimum": M, "subcategories": {...}}}}
@@ -3152,20 +3354,17 @@ with tabs[4]:
                     imported_residents.append(res_name)
         return imported_residents
 
-    # Auto-import from watch folder
-    new_imports = scan_import_folder_for_case_logs()
-    if new_imports:
+    def process_imported_files(new_imports, source_name):
+        """Process imported files from any source."""
         total_imported = 0
         for filename, df in new_imports:
             if is_summary_format(df):
-                # Parse as summary format
                 imported = import_summary_file(df, filename)
                 if imported:
-                    st.toast(f"📥 Imported summary for: {', '.join(imported)}")
+                    st.toast(f"📥 {source_name}: Imported {', '.join(imported)}")
                     total_imported += len(imported)
             else:
-                # Fall back to individual case parsing
-                st.toast(f"📥 Auto-imported: {filename}")
+                # Try to parse anyway
                 df.columns = df.columns.str.strip()
                 resident_col = None
                 for c in df.columns:
@@ -3182,92 +3381,153 @@ with tabs[4]:
                         resident_df = df[df[resident_col] == resident].copy()
                         if res_name not in st.session_state.case_logs:
                             st.session_state.case_logs[res_name] = resident_df
-                        else:
-                            if isinstance(st.session_state.case_logs[res_name], pd.DataFrame):
-                                st.session_state.case_logs[res_name] = pd.concat(
-                                    [st.session_state.case_logs[res_name], resident_df]
-                                ).drop_duplicates()
                         total_imported += 1
+        return total_imported
 
-        if total_imported > 0:
-            save_case_logs_to_cache(st.session_state.case_logs)
-            st.success(f"✅ Auto-imported {len(new_imports)} file(s) from watch folder")
+    # Auto-import from Google Drive (if configured)
+    if drive_configured:
+        drive_imports = scan_google_drive_for_case_logs()
+        if drive_imports:
+            imported_count = process_imported_files(drive_imports, "Google Drive")
+            if imported_count > 0:
+                save_case_logs_to_cache(st.session_state.case_logs)
+                st.success(f"✅ Imported {len(drive_imports)} file(s) from Google Drive")
 
-    # Watch folder info
-    watch_folder_path = str(CASE_LOG_IMPORT_FOLDER)
-    st.info(f"📁 **Watch folder:** `{watch_folder_path}`\n\nDrop ACGME summary exports (ResMinimumDefCat) here → they'll import automatically!")
+    # Auto-import from local watch folder (fallback if Drive not configured)
+    if not drive_configured:
+        new_imports = scan_import_folder_for_case_logs()
+        if new_imports:
+            imported_count = process_imported_files(new_imports, "Watch folder")
+            if imported_count > 0:
+                save_case_logs_to_cache(st.session_state.case_logs)
+                st.success(f"✅ Auto-imported {len(new_imports)} file(s) from watch folder")
+
+    # Show import source status
+    if drive_configured:
+        st.success("✅ **Google Drive connected** - Files are auto-imported when emailed to your inbox")
+        with st.expander("📧 Email Import Setup", expanded=False):
+            st.markdown("""
+**How it works:**
+1. Program coordinator exports case logs from ACGME (PDF or Excel)
+2. Coordinator emails the file to your designated inbox
+3. Zapier/Make automatically saves attachments to Google Drive
+4. This app imports them on each page load
+
+**Email address:** *(Set up your own via Zapier)*
+
+**Refresh:** Click the browser refresh button to check for new files.
+            """)
+            if st.button("🔄 Check for new files"):
+                st.rerun()
+    else:
+        watch_folder_path = str(CASE_LOG_IMPORT_FOLDER)
+        st.info(f"📁 **Watch folder:** `{watch_folder_path}`\n\nDrop ACGME exports here → they'll import automatically!")
+
+        with st.expander("📧 Set up Email Import (Google Drive)", expanded=False):
+            st.markdown("""
+**To enable automatic email import:**
+
+1. **Create a Google Cloud Project** → Enable Drive API
+2. **Create a Service Account** → Download JSON credentials
+3. **Create a Google Drive folder** → Share with service account email
+4. **Set up Zapier** → Gmail attachment → Save to Google Drive
+5. **Add secrets to Streamlit Cloud:**
+
+```toml
+[google_drive]
+type = "service_account"
+project_id = "your-project-id"
+private_key_id = "..."
+private_key = "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"
+client_email = "your-service-account@your-project.iam.gserviceaccount.com"
+client_id = "..."
+folder_id = "your-google-drive-folder-id"
+```
+
+See README for detailed setup instructions.
+            """)
 
     # File upload section (manual backup option)
-    with st.expander("📤 Manual Upload (alternative)", expanded=False):
+    with st.expander("📤 Manual Upload", expanded=False):
         st.markdown("""
 **How to export from ACGME:**
 1. Log into [ACGME ADS](https://apps.acgme.org/connect/login)
 2. Go to **Case Logs** → **Reports** → **Resident Minimum Defined Categories**
-3. Select resident(s) and export to Excel
-4. Drop the file in the watch folder OR upload below
+3. Select resident(s) and export to **PDF** or Excel
+4. Upload below
 
-The app supports the "Resident Minimum Defined Categories" summary format.
+Supports PDF and Excel formats.
         """)
 
         uploaded_file = st.file_uploader(
-            "Upload ACGME Case Log Export (Excel/CSV)",
-            type=["xlsx", "xls", "csv"],
+            "Upload ACGME Case Log Export (PDF/Excel/CSV)",
+            type=["pdf", "xlsx", "xls", "csv"],
             key="case_log_upload"
         )
 
         if uploaded_file:
             try:
-                if uploaded_file.name.endswith('.csv'):
+                df = None
+                if uploaded_file.name.lower().endswith('.pdf'):
+                    if HAS_PDFPLUMBER:
+                        file_buffer = io.BytesIO(uploaded_file.read())
+                        df = parse_acgme_pdf(file_buffer)
+                        if df is None or df.empty:
+                            st.error("Could not extract data from PDF. Try Excel format.")
+                    else:
+                        st.error("PDF support not available. Please upload Excel format.")
+                elif uploaded_file.name.endswith('.csv'):
                     df = pd.read_csv(uploaded_file)
                 else:
                     df = pd.read_excel(uploaded_file)
 
-                st.success(f"✅ Loaded file with {len(df)} rows")
+                if df is not None and not df.empty:
+                    st.success(f"✅ Loaded file with {len(df)} rows")
 
-                # Check if it's summary format
-                if is_summary_format(df):
-                    st.info("📊 Detected ACGME summary format (category totals)")
+                    # Check if it's summary format
+                    if is_summary_format(df):
+                        st.info("📊 Detected ACGME summary format (category totals)")
 
-                    # Show preview
-                    st.markdown("**Preview:**")
-                    st.dataframe(df.head(10), use_container_width=True)
+                        # Show preview
+                        st.markdown("**Preview:**")
+                        st.dataframe(df.head(10), use_container_width=True)
 
-                    if st.button("Import Summary Data"):
-                        imported = import_summary_file(df, uploaded_file.name)
-                        if imported:
-                            save_case_logs_to_cache(st.session_state.case_logs)
-                            st.success(f"✅ Imported data for: {', '.join(imported)}")
-                            st.rerun()
-                        else:
-                            st.error("Could not parse resident data from file. Check the format.")
-                else:
-                    # Individual case format - need column mapping
-                    st.info("📋 Detected individual case format")
-                    df.columns = df.columns.str.strip()
-                    possible_resident_cols = [c for c in df.columns if any(x in c.lower() for x in ['resident', 'name', 'trainee'])]
-                    possible_cpt_cols = [c for c in df.columns if any(x in c.lower() for x in ['cpt', 'code', 'procedure'])]
-
-                    resident_col = st.selectbox("Select Resident column:", options=df.columns.tolist(),
-                                               index=df.columns.tolist().index(possible_resident_cols[0]) if possible_resident_cols else 0)
-                    cpt_col = st.selectbox("Select CPT Code column:", options=df.columns.tolist(),
-                                           index=df.columns.tolist().index(possible_cpt_cols[0]) if possible_cpt_cols else 0)
-                    role_col = st.selectbox("Select Role column (optional):", options=["(None)"] + df.columns.tolist())
-
-                    if st.button("Import Cases"):
-                        for resident in df[resident_col].unique():
-                            if pd.isna(resident) or str(resident).strip() == "":
-                                continue
-                            resident_df = df[df[resident_col] == resident].copy()
-                            if resident not in st.session_state.case_logs:
-                                st.session_state.case_logs[resident] = resident_df
+                        if st.button("Import Summary Data"):
+                            imported = import_summary_file(df, uploaded_file.name)
+                            if imported:
+                                save_case_logs_to_cache(st.session_state.case_logs)
+                                st.success(f"✅ Imported data for: {', '.join(imported)}")
+                                st.rerun()
                             else:
-                                if isinstance(st.session_state.case_logs[resident], pd.DataFrame):
-                                    st.session_state.case_logs[resident] = pd.concat(
-                                        [st.session_state.case_logs[resident], resident_df]
-                                    ).drop_duplicates()
-                        save_case_logs_to_cache(st.session_state.case_logs)
-                        st.success(f"✅ Imported cases for {len(df[resident_col].unique())} residents")
-                        st.rerun()
+                                st.error("Could not parse resident data from file. Check the format.")
+                    else:
+                        # Individual case format - need column mapping
+                        st.info("📋 Detected individual case format")
+                        df.columns = df.columns.str.strip()
+                        possible_resident_cols = [c for c in df.columns if any(x in c.lower() for x in ['resident', 'name', 'trainee'])]
+                        possible_cpt_cols = [c for c in df.columns if any(x in c.lower() for x in ['cpt', 'code', 'procedure'])]
+
+                        resident_col = st.selectbox("Select Resident column:", options=df.columns.tolist(),
+                                                   index=df.columns.tolist().index(possible_resident_cols[0]) if possible_resident_cols else 0)
+                        cpt_col = st.selectbox("Select CPT Code column:", options=df.columns.tolist(),
+                                               index=df.columns.tolist().index(possible_cpt_cols[0]) if possible_cpt_cols else 0)
+                        role_col = st.selectbox("Select Role column (optional):", options=["(None)"] + df.columns.tolist())
+
+                        if st.button("Import Cases"):
+                            for resident in df[resident_col].unique():
+                                if pd.isna(resident) or str(resident).strip() == "":
+                                    continue
+                                resident_df = df[df[resident_col] == resident].copy()
+                                if resident not in st.session_state.case_logs:
+                                    st.session_state.case_logs[resident] = resident_df
+                                else:
+                                    if isinstance(st.session_state.case_logs[resident], pd.DataFrame):
+                                        st.session_state.case_logs[resident] = pd.concat(
+                                            [st.session_state.case_logs[resident], resident_df]
+                                        ).drop_duplicates()
+                            save_case_logs_to_cache(st.session_state.case_logs)
+                            st.success(f"✅ Imported cases for {len(df[resident_col].unique())} residents")
+                            st.rerun()
 
             except Exception as e:
                 st.error(f"Error reading file: {e}")

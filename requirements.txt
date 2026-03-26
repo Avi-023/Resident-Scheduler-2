@@ -11,5 +11,12 @@ pyarrow>=14,<20
 xlsxwriter>=3.1,<4.0
 openpyxl>=3.1,<4.0
 
+# PDF parsing for ACGME case logs
+pdfplumber>=0.10,<1.0
+
+# Google Drive integration
+google-api-python-client>=2.100,<3.0
+google-auth>=2.23,<3.0
+
 # Optional optimizer (schedule can be generated without it)
 # pulp>=2.7,<3.0
