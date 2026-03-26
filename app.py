@@ -240,104 +240,73 @@ ATTENDING_PREFERENCES = {
 # ACGME General Surgery Defined Categories & Minimums
 # Based on ACGME/ABS requirements
 # --------------------------
+# ACGME General Surgery Defined Categories (matches ACGME Case Log System export format)
 ACGME_CATEGORIES = {
-    # Main categories with subcategories
-    "ALIMENTARY TRACT": {
-        "minimum": 173,
+    "Skin and Soft Tissue": {
+        "minimum": 25,
+        "subcategories": {}
+    },
+    "Breast": {
+        "minimum": 40,
+        "subcategories": {
+            "Mastectomy": {"minimum": 5},
+            "Axilla": {"minimum": 5},
+        }
+    },
+    "Head and Neck": {
+        "minimum": 25,
+        "subcategories": {}
+    },
+    "Alimentary Tract": {
+        "minimum": 180,
         "subcategories": {
             "Esophagus": {"minimum": 5},
-            "Stomach": {"minimum": 9},
-            "Small Intestine": {"minimum": 17},
-            "Large Intestine": {"minimum": 36},
+            "Stomach": {"minimum": 10},
+            "Small Intestine": {"minimum": 20},
+            "Large Intestine": {"minimum": 40},
             "Appendix": {"minimum": 30},
-            "Anorectal": {"minimum": 16},
+            "Anorectal": {"minimum": 20},
             "Liver": {"minimum": 5},
-            "Biliary": {"minimum": 30},
+            "Biliary": {"minimum": 35},
             "Pancreas": {"minimum": 3},
             "Spleen": {"minimum": 3},
         }
     },
-    "ABDOMEN": {
-        "minimum": 67,
+    "Abdomen": {
+        "minimum": 85,
         "subcategories": {
-            "Hernia - Inguinal": {"minimum": 35},
+            "Abdominal - Other": {"minimum": 0},
+            "Hernia - Inguinal": {"minimum": 40},
             "Hernia - Femoral": {"minimum": 0},
             "Hernia - Ventral/Incisional": {"minimum": 20},
-            "Hernia - Other": {"minimum": 0},
-            "Abdominal Other": {"minimum": 0},
+            "Hernia - Other Abdominal Wall": {"minimum": 0},
         }
     },
-    "BREAST": {
-        "minimum": 22,
+    "Endocrine": {
+        "minimum": 15,
         "subcategories": {
-            "Biopsy/Partial Mastectomy": {"minimum": 0},
-            "Mastectomy": {"minimum": 0},
-            "Sentinel Node": {"minimum": 0},
-            "Axillary Dissection": {"minimum": 0},
-        }
-    },
-    "HEAD & NECK": {
-        "minimum": 12,
-        "subcategories": {
-            "Thyroid/Parathyroid": {"minimum": 0},
-            "Salivary Gland": {"minimum": 0},
-            "Neck Dissection": {"minimum": 0},
-            "Skin/Soft Tissue H&N": {"minimum": 0},
-        }
-    },
-    "ENDOCRINE": {
-        "minimum": 12,
-        "subcategories": {
-            "Thyroid": {"minimum": 0},
-            "Parathyroid": {"minimum": 0},
+            "Thyroid": {"minimum": 5},
+            "Parathyroid": {"minimum": 3},
             "Adrenal": {"minimum": 0},
         }
     },
-    "SKIN/SOFT TISSUE": {
-        "minimum": 24,
-        "subcategories": {
-            "Skin Lesion Excision": {"minimum": 0},
-            "Soft Tissue Tumor": {"minimum": 0},
-            "Wound Debridement": {"minimum": 0},
-        }
-    },
-    "VASCULAR": {
-        "minimum": 28,
+    "Vascular": {
+        "minimum": 25,
         "subcategories": {
             "Carotid": {"minimum": 0},
-            "Aorta": {"minimum": 0},
+            "Abdominal Aorta": {"minimum": 0},
             "Visceral Vessels": {"minimum": 0},
             "Lower Extremity Bypass": {"minimum": 0},
             "Amputation": {"minimum": 0},
-            "Dialysis Access": {"minimum": 10},
-            "Vein (Varicose/DVT)": {"minimum": 0},
-            "Endovascular": {"minimum": 0},
+            "Vascular Access for Dialysis": {"minimum": 10},
+            "Vein": {"minimum": 0},
         }
     },
-    "TRAUMA": {
-        "minimum": 40,
-        "subcategories": {
-            "Operative Trauma": {"minimum": 10},
-            "Non-operative Management": {"minimum": 40},
-        }
-    },
-    "SURGICAL CRITICAL CARE": {
-        "minimum": 40,
-        "subcategories": {
-            "Ventilatory Management": {"minimum": 1},
-            "Bleeding/Coagulopathy": {"minimum": 1},
-            "Hemodynamic Instability": {"minimum": 1},
-            "Organ Dysfunction/Failure": {"minimum": 1},
-            "Dysrhythmias": {"minimum": 1},
-            "Invasive Line Management": {"minimum": 1},
-            "Nutritional Support": {"minimum": 1},
-        }
-    },
-    "PEDIATRIC": {
-        "minimum": 10,
+    "Pediatric": {
+        "minimum": 15,
         "subcategories": {}
     },
-    "THORACIC": {
+    "Thoracic": {
         "minimum": 20,
         "subcategories": {
             "Chest Wall": {"minimum": 0},
@@ -345,23 +314,30 @@ ACGME_CATEGORIES = {
             "Mediastinum": {"minimum": 0},
         }
     },
-    "LAPAROSCOPIC/MINIMALLY INVASIVE": {
+    "Trauma": {
         "minimum": 75,
         "subcategories": {
-            "Lap Cholecystectomy": {"minimum": 0},
-            "Lap Appendectomy": {"minimum": 0},
-            "Lap Hernia": {"minimum": 0},
-            "Lap Colorectal": {"minimum": 0},
-            "Lap Other": {"minimum": 0},
+            "Operative Trauma": {"minimum": 20},
+            "Non-operative Trauma": {"minimum": 40},
         }
     },
-    "ENDOSCOPY": {
+    "Critical Care": {
+        "minimum": 100,
+        "subcategories": {}
+    },
+    "Basic Laparoscopic": {
+        "minimum": 100,
+        "subcategories": {}
+    },
+    "Complex Laparoscopic": {
+        "minimum": 50,
+        "subcategories": {}
+    },
+    "Endoscopy": {
         "minimum": 85,
         "subcategories": {
-            "EGD": {"minimum": 35},
-            "Colonoscopy": {"minimum": 50},
-            "Bronchoscopy": {"minimum": 0},
-            "ERCP": {"minimum": 0},
+            "Upper GI Endoscopy": {"minimum": 35},
+            "Lower GI Endoscopy": {"minimum": 50},
         }
     },
 }
@@ -369,7 +345,115 @@ ACGME_CATEGORIES = {
 # Total case minimum
 ACGME_TOTAL_MINIMUM = 850
 
-# Common CPT code to category mappings (subset - will expand)
+def parse_acgme_summary_report(df):
+    """
+    Parse ACGME summary report format (ResMinimumDefCat export).
+
+    The format has columns like:
+    - Category (with indented subcategories)
+    - Minimum
+    - One or more resident name columns with their totals
+
+    Returns: dict of {resident_name: {category: {"total": N, "subcategories": {...}}}}
+    """
+    result = {}
+
+    if df is None or df.empty:
+        return result
+
+    # Clean column names
+    df.columns = df.columns.str.strip()
+
+    # Find the category column (usually first column or "Category")
+    cat_col = None
+    for col in df.columns:
+        if 'category' in col.lower() or col == df.columns[0]:
+            cat_col = col
+            break
+
+    if cat_col is None:
+        cat_col = df.columns[0]
+
+    # Find minimum column
+    min_col = None
+    for col in df.columns:
+        if 'minimum' in col.lower() or 'min' in col.lower():
+            min_col = col
+            break
+
+    # Resident columns are any columns after category/minimum that contain numbers
+    resident_cols = []
+    for col in df.columns:
+        if col != cat_col and col != min_col:
+            # Check if this column has numeric data
+            try:
+                if df[col].dropna().apply(lambda x: str(x).replace(',', '').isdigit() if pd.notna(x) else True).any():
+                    resident_cols.append(col)
+            except:
+                pass
+
+    # If no obvious resident columns found, take remaining columns
+    if not resident_cols:
+        resident_cols = [c for c in df.columns if c not in [cat_col, min_col]]
+
+    # Initialize result for each resident
+    for res_col in resident_cols:
+        result[res_col] = {}
+
+    # Parse each row
+    current_category = None
+    for _, row in df.iterrows():
+        cat_value = str(row.get(cat_col, "")).strip()
+
+        if not cat_value or cat_value.lower() in ['nan', 'none', '']:
+            continue
+
+        # Detect if this is a subcategory (indented or has specific markers)
+        is_subcategory = cat_value.startswith('    ') or cat_value.startswith('\t')
+        cat_name = cat_value.strip()
+
+        # Skip total rows
+        if 'total' in cat_name.lower() and 'major' in cat_name.lower():
+            continue
+        if cat_name.lower() == 'total':
+            continue
+
+        # Get minimum value
+        minimum = 0
+        if min_col:
+            try:
+                min_val = row.get(min_col, 0)
+                minimum = int(float(str(min_val).replace(',', ''))) if pd.notna(min_val) else 0
+            except:
+                pass
+
+        # Process each resident's value
+        for res_col in resident_cols:
+            try:
+                val = row.get(res_col, 0)
+                count = int(float(str(val).replace(',', ''))) if pd.notna(val) else 0
+            except:
+                count = 0
+
+            if is_subcategory and current_category:
+                # Add as subcategory under current category
+                if current_category not in result[res_col]:
+                    result[res_col][current_category] = {"total": 0, "minimum": 0, "subcategories": {}}
+                result[res_col][current_category]["subcategories"][cat_name] = {
+                    "count": count,
+                    "minimum": minimum
+                }
+            else:
+                # Main category
+                current_category = cat_name
+                if cat_name not in result[res_col]:
+                    result[res_col][cat_name] = {"total": 0, "minimum": minimum, "subcategories": {}}
+                result[res_col][cat_name]["total"] = count
+                result[res_col][cat_name]["minimum"] = minimum
+
+    return result
+
+# Common CPT code to category mappings (subset - kept for manual entry)
 CPT_TO_CATEGORY = {
     # Alimentary Tract - Appendix
     "44950": ("ALIMENTARY TRACT", "Appendix"),  # Appendectomy
@@ -3038,55 +3122,91 @@ with tabs[4]:
     st.caption("Drop case log exports into the watch folder for automatic import.")
 
     # Initialize case log storage from cache
+    # case_logs stores summary data: {resident: {category: {"total": N, "minimum": M, "subcategories": {...}}}}
     if "case_logs" not in st.session_state:
         st.session_state.case_logs = load_case_logs_from_cache()
+
+    def is_summary_format(df):
+        """Check if the DataFrame is an ACGME summary report (categories with totals)."""
+        if df is None or df.empty:
+            return False
+        cols_lower = [str(c).lower() for c in df.columns]
+        # Summary format typically has: Category, Minimum, and resident name columns
+        has_category = any('category' in c or 'defined' in c for c in cols_lower)
+        has_minimum = any('minimum' in c or 'min' in c for c in cols_lower)
+        # Check if first column looks like category names (not dates or CPT codes)
+        first_col_vals = df.iloc[:, 0].dropna().astype(str).head(5)
+        has_text_categories = any(len(v) > 5 and not v.replace('.', '').isdigit() for v in first_col_vals)
+        return (has_category or has_minimum) and has_text_categories
+
+    def import_summary_file(df, filename):
+        """Import an ACGME summary report file."""
+        parsed = parse_acgme_summary_report(df)
+        imported_residents = []
+        for resident, categories in parsed.items():
+            if resident and categories:
+                # Clean resident name
+                res_name = str(resident).strip()
+                if res_name.lower() not in ['minimum', 'min', 'category', 'nan', '']:
+                    st.session_state.case_logs[res_name] = categories
+                    imported_residents.append(res_name)
+        return imported_residents
 
     # Auto-import from watch folder
     new_imports = scan_import_folder_for_case_logs()
     if new_imports:
+        total_imported = 0
         for filename, df in new_imports:
-            st.toast(f"📥 Auto-imported: {filename}")
-            # Try to auto-detect columns and import
-            df.columns = df.columns.str.strip()
+            if is_summary_format(df):
+                # Parse as summary format
+                imported = import_summary_file(df, filename)
+                if imported:
+                    st.toast(f"📥 Imported summary for: {', '.join(imported)}")
+                    total_imported += len(imported)
+            else:
+                # Fall back to individual case parsing
+                st.toast(f"📥 Auto-imported: {filename}")
+                df.columns = df.columns.str.strip()
+                resident_col = None
+                for c in df.columns:
+                    if any(x in c.lower() for x in ['resident', 'name', 'trainee', 'fellow']):
+                        resident_col = c
+                        break
+                if resident_col is None and len(df.columns) > 0:
+                    resident_col = df.columns[0]
+                if resident_col:
+                    for resident in df[resident_col].unique():
+                        if pd.isna(resident) or str(resident).strip() == "":
+                            continue
+                        res_name = str(resident).strip()
+                        resident_df = df[df[resident_col] == resident].copy()
+                        if res_name not in st.session_state.case_logs:
+                            st.session_state.case_logs[res_name] = resident_df
+                        else:
+                            if isinstance(st.session_state.case_logs[res_name], pd.DataFrame):
+                                st.session_state.case_logs[res_name] = pd.concat(
+                                    [st.session_state.case_logs[res_name], resident_df]
+                                ).drop_duplicates()
+                        total_imported += 1
 
-            # Find resident column
-            resident_col = None
-            for c in df.columns:
-                if any(x in c.lower() for x in ['resident', 'name', 'trainee', 'fellow']):
-                    resident_col = c
-                    break
-            if resident_col is None and len(df.columns) > 0:
-                resident_col = df.columns[0]
-
-            if resident_col:
-                for resident in df[resident_col].unique():
-                    if pd.isna(resident) or str(resident).strip() == "":
-                        continue
-                    res_name = str(resident).strip()
-                    resident_df = df[df[resident_col] == resident].copy()
-                    if res_name not in st.session_state.case_logs:
-                        st.session_state.case_logs[res_name] = resident_df
-                    else:
-                        st.session_state.case_logs[res_name] = pd.concat(
-                            [st.session_state.case_logs[res_name], resident_df]
-                        ).drop_duplicates()
-
-        # Save to cache
-        save_case_logs_to_cache(st.session_state.case_logs)
-        st.success(f"✅ Auto-imported {len(new_imports)} file(s) from watch folder")
+        if total_imported > 0:
+            save_case_logs_to_cache(st.session_state.case_logs)
+            st.success(f"✅ Auto-imported {len(new_imports)} file(s) from watch folder")
 
     # Watch folder info
     watch_folder_path = str(CASE_LOG_IMPORT_FOLDER)
-    st.info(f"📁 **Watch folder:** `{watch_folder_path}`\n\nDrop ACGME Excel exports here → they'll import automatically!")
+    st.info(f"📁 **Watch folder:** `{watch_folder_path}`\n\nDrop ACGME summary exports (ResMinimumDefCat) here → they'll import automatically!")
 
     # File upload section (manual backup option)
     with st.expander("📤 Manual Upload (alternative)", expanded=False):
         st.markdown("""
 **How to export from ACGME:**
 1. Log into [ACGME ADS](https://apps.acgme.org/connect/login)
-2. Go to **Case Logs** → **Download/Reports**
-3. Select the resident(s) and click **Excel**
-4. Either drop in the watch folder OR upload below
+2. Go to **Case Logs** → **Reports** → **Resident Minimum Defined Categories**
+3. Select resident(s) and export to Excel
+4. Drop the file in the watch folder OR upload below
+
+The app supports the "Resident Minimum Defined Categories" summary format.
         """)
 
         uploaded_file = st.file_uploader(
@@ -3102,74 +3222,55 @@ with tabs[4]:
                 else:
                     df = pd.read_excel(uploaded_file)
 
-                st.success(f"✅ Loaded {len(df)} case records")
+                st.success(f"✅ Loaded file with {len(df)} rows")
 
-                # Try to identify the resident column and CPT column
-                df.columns = df.columns.str.strip()
-                possible_resident_cols = [c for c in df.columns if any(x in c.lower() for x in ['resident', 'name', 'trainee'])]
-                possible_cpt_cols = [c for c in df.columns if any(x in c.lower() for x in ['cpt', 'code', 'procedure'])]
+                # Check if it's summary format
+                if is_summary_format(df):
+                    st.info("📊 Detected ACGME summary format (category totals)")
 
-                resident_col = st.selectbox("Select Resident column:", options=df.columns.tolist(),
-                                           index=df.columns.tolist().index(possible_resident_cols[0]) if possible_resident_cols else 0)
-                cpt_col = st.selectbox("Select CPT Code column:", options=df.columns.tolist(),
-                                       index=df.columns.tolist().index(possible_cpt_cols[0]) if possible_cpt_cols else 0)
+                    # Show preview
+                    st.markdown("**Preview:**")
+                    st.dataframe(df.head(10), use_container_width=True)
 
-                # Optional: role column (Surgeon, First Assist, Teaching Assist)
-                role_col = st.selectbox("Select Role column (optional):", options=["(None)"] + df.columns.tolist())
-
-                if st.button("Import Cases"):
-                    # Group by resident
-                    for resident in df[resident_col].unique():
-                        if pd.isna(resident) or str(resident).strip() == "":
-                            continue
-                        resident_df = df[df[resident_col] == resident].copy()
-                        if resident not in st.session_state.case_logs:
-                            st.session_state.case_logs[resident] = resident_df
+                    if st.button("Import Summary Data"):
+                        imported = import_summary_file(df, uploaded_file.name)
+                        if imported:
+                            save_case_logs_to_cache(st.session_state.case_logs)
+                            st.success(f"✅ Imported data for: {', '.join(imported)}")
+                            st.rerun()
                         else:
-                            # Merge/append
-                            st.session_state.case_logs[resident] = pd.concat(
-                                [st.session_state.case_logs[resident], resident_df]
-                            ).drop_duplicates()
+                            st.error("Could not parse resident data from file. Check the format.")
+                else:
+                    # Individual case format - need column mapping
+                    st.info("📋 Detected individual case format")
+                    df.columns = df.columns.str.strip()
+                    possible_resident_cols = [c for c in df.columns if any(x in c.lower() for x in ['resident', 'name', 'trainee'])]
+                    possible_cpt_cols = [c for c in df.columns if any(x in c.lower() for x in ['cpt', 'code', 'procedure'])]
 
-                    st.success(f"✅ Imported cases for {len(df[resident_col].unique())} residents")
-                    st.rerun()
+                    resident_col = st.selectbox("Select Resident column:", options=df.columns.tolist(),
+                                               index=df.columns.tolist().index(possible_resident_cols[0]) if possible_resident_cols else 0)
+                    cpt_col = st.selectbox("Select CPT Code column:", options=df.columns.tolist(),
+                                           index=df.columns.tolist().index(possible_cpt_cols[0]) if possible_cpt_cols else 0)
+                    role_col = st.selectbox("Select Role column (optional):", options=["(None)"] + df.columns.tolist())
+
+                    if st.button("Import Cases"):
+                        for resident in df[resident_col].unique():
+                            if pd.isna(resident) or str(resident).strip() == "":
+                                continue
+                            resident_df = df[df[resident_col] == resident].copy()
+                            if resident not in st.session_state.case_logs:
+                                st.session_state.case_logs[resident] = resident_df
+                            else:
+                                if isinstance(st.session_state.case_logs[resident], pd.DataFrame):
+                                    st.session_state.case_logs[resident] = pd.concat(
+                                        [st.session_state.case_logs[resident], resident_df]
+                                    ).drop_duplicates()
+                        save_case_logs_to_cache(st.session_state.case_logs)
+                        st.success(f"✅ Imported cases for {len(df[resident_col].unique())} residents")
+                        st.rerun()
 
             except Exception as e:
                 st.error(f"Error reading file: {e}")
-
-        # Manual entry option
-        st.markdown("---")
-        st.markdown("**Or enter cases manually:**")
-
-        manual_cols = st.columns([2, 1, 2, 1])
-        with manual_cols[0]:
-            manual_resident = st.selectbox("Resident:", options=[""] + list(st.session_state.roster_table["Resident"].dropna().unique()),
-                                          key="manual_case_resident")
-        with manual_cols[1]:
-            manual_cpt = st.text_input("CPT Code:", key="manual_case_cpt")
-        with manual_cols[2]:
-            manual_desc = st.text_input("Description:", key="manual_case_desc")
-        with manual_cols[3]:
-            manual_role = st.selectbox("Role:", ["Surgeon", "First Assist", "Teaching Assist"], key="manual_case_role")
-
-        if st.button("Add Case Manually"):
-            if manual_resident and manual_cpt:
-                new_case = pd.DataFrame([{
-                    "Resident": manual_resident,
-                    "CPT": manual_cpt,
-                    "Description": manual_desc,
-                    "Role": manual_role,
-                    "Date": date.today().isoformat()
-                }])
-                if manual_resident not in st.session_state.case_logs:
-                    st.session_state.case_logs[manual_resident] = new_case
-                else:
-                    st.session_state.case_logs[manual_resident] = pd.concat(
-                        [st.session_state.case_logs[manual_resident], new_case],
-                        ignore_index=True
-                    )
-                st.success(f"Added case for {manual_resident}")
-                st.rerun()
 
     # Dashboard display
     if st.session_state.case_logs:
@@ -3180,32 +3281,6 @@ with tabs[4]:
         all_residents = sorted(st.session_state.case_logs.keys())
         selected_resident = st.selectbox("Select Resident:", options=["(All Residents)"] + all_residents,
                                          key="case_log_resident_view")
-
-        def count_cases_by_category(cases_df):
-            """Count cases by ACGME category."""
-            counts = {cat: {"total": 0, "subcategories": {}} for cat in ACGME_CATEGORIES}
-
-            # Try to find CPT column
-            cpt_col = None
-            for c in cases_df.columns:
-                if 'cpt' in c.lower() or 'code' in c.lower():
-                    cpt_col = c
-                    break
-
-            if cpt_col is None:
-                return counts
-
-            for _, row in cases_df.iterrows():
-                cpt = str(row.get(cpt_col, "")).strip()
-                if cpt in CPT_TO_CATEGORY:
-                    cat, subcat = CPT_TO_CATEGORY[cpt]
-                    if cat in counts:
-                        counts[cat]["total"] += 1
-                        if subcat not in counts[cat]["subcategories"]:
-                            counts[cat]["subcategories"][subcat] = 0
-                        counts[cat]["subcategories"][subcat] += 1
-
-            return counts
 
         def render_progress_bar(current, minimum, label):
             """Render a progress bar with color coding."""
@@ -3228,14 +3303,36 @@ with tabs[4]:
             </div>
             """, unsafe_allow_html=True)
 
+        def get_resident_progress(res_data):
+            """Get progress data from either summary dict or DataFrame."""
+            if isinstance(res_data, dict):
+                # Summary format: {category: {"total": N, "minimum": M, "subcategories": {...}}}
+                return res_data
+            elif isinstance(res_data, pd.DataFrame):
+                # Individual cases format - count by CPT codes
+                counts = {cat: {"total": 0, "minimum": ACGME_CATEGORIES[cat]["minimum"], "subcategories": {}} for cat in ACGME_CATEGORIES}
+                cpt_col = None
+                for c in res_data.columns:
+                    if 'cpt' in c.lower() or 'code' in c.lower():
+                        cpt_col = c
+                        break
+                if cpt_col:
+                    for _, row in res_data.iterrows():
+                        cpt = str(row.get(cpt_col, "")).strip()
+                        if cpt in CPT_TO_CATEGORY:
+                            cat, subcat = CPT_TO_CATEGORY[cpt]
+                            if cat in counts:
+                                counts[cat]["total"] += 1
+                return counts
+            return {}
+
         if selected_resident == "(All Residents)":
             # Summary view for all residents
             summary_data = []
             for res in all_residents:
-                res_cases = st.session_state.case_logs[res]
-                total_cases = len(res_cases)
-                counts = count_cases_by_category(res_cases)
-                total_counted = sum(c["total"] for c in counts.values())
+                res_data = st.session_state.case_logs[res]
+                progress = get_resident_progress(res_data)
+                total_counted = sum(cat_data.get("total", 0) for cat_data in progress.values())
 
                 # Get PGY level from roster
                 roster_match = st.session_state.roster_table[
@@ -3243,12 +3340,14 @@ with tabs[4]:
                 ]
                 pgy = roster_match["PGY"].iloc[0] if not roster_match.empty else "?"
 
+                # Calculate completion percentage
+                pct = (total_counted / ACGME_TOTAL_MINIMUM * 100) if ACGME_TOTAL_MINIMUM > 0 else 0
+
                 summary_data.append({
                     "Resident": res,
                     "PGY": pgy,
-                    "Total Cases": total_cases,
-                    "Categorized": total_counted,
-                    "Progress": f"{total_counted}/{ACGME_TOTAL_MINIMUM} ({total_counted/ACGME_TOTAL_MINIMUM*100:.0f}%)"
+                    "Total Cases": total_counted,
+                    "Progress": f"{total_counted}/{ACGME_TOTAL_MINIMUM} ({pct:.0f}%)"
                 })
 
             summary_df = pd.DataFrame(summary_data)
@@ -3266,40 +3365,54 @@ with tabs[4]:
 
         else:
             # Individual resident view
-            res_cases = st.session_state.case_logs[selected_resident]
-            counts = count_cases_by_category(res_cases)
+            res_data = st.session_state.case_logs[selected_resident]
+            progress = get_resident_progress(res_data)
 
             st.markdown(f"### {selected_resident}")
 
             # Total progress
-            total_counted = sum(c["total"] for c in counts.values())
+            total_counted = sum(cat_data.get("total", 0) for cat_data in progress.values())
             st.markdown("#### Overall Progress")
-            render_progress_bar(total_counted, ACGME_TOTAL_MINIMUM, "Total Cases (as Surgeon)")
+            render_progress_bar(total_counted, ACGME_TOTAL_MINIMUM, "Total Major Cases")
 
             # Category breakdown
             st.markdown("#### Progress by Category")
 
-            for cat, cat_data in ACGME_CATEGORIES.items():
-                minimum = cat_data["minimum"]
-                current = counts[cat]["total"]
+            for cat, cat_info in ACGME_CATEGORIES.items():
+                minimum = cat_info["minimum"]
+                # Get current from progress data (either from summary or calculated)
+                cat_progress = progress.get(cat, {})
+                current = cat_progress.get("total", 0)
+                # Use minimum from import if available, otherwise from ACGME_CATEGORIES
+                minimum_display = cat_progress.get("minimum", minimum)
 
-                with st.expander(f"{cat} ({current}/{minimum})", expanded=(current < minimum)):
-                    render_progress_bar(current, minimum, cat)
+                with st.expander(f"{cat} ({current}/{minimum_display})", expanded=(current < minimum_display)):
+                    render_progress_bar(current, minimum_display, cat)
 
-                    # Subcategories
-                    if cat_data["subcategories"]:
-                        for subcat, sub_data in cat_data["subcategories"].items():
-                            sub_min = sub_data["minimum"]
-                            sub_cur = counts[cat]["subcategories"].get(subcat, 0)
-                            if sub_min > 0 or sub_cur > 0:
-                                render_progress_bar(sub_cur, sub_min, f"  └─ {subcat}")
+                    # Subcategories from either source
+                    subcats = cat_progress.get("subcategories", {})
+                    expected_subcats = cat_info.get("subcategories", {})
 
-            # Raw data view
-            with st.expander("View Raw Case Data"):
-                st.dataframe(res_cases, use_container_width=True, hide_index=True)
+                    # Show subcategories from progress data
+                    for subcat, sub_data in subcats.items():
+                        if isinstance(sub_data, dict):
+                            sub_cur = sub_data.get("count", 0)
+                            sub_min = sub_data.get("minimum", expected_subcats.get(subcat, {}).get("minimum", 0))
+                        else:
+                            sub_cur = sub_data
+                            sub_min = expected_subcats.get(subcat, {}).get("minimum", 0)
+                        if sub_min > 0 or sub_cur > 0:
+                            render_progress_bar(sub_cur, sub_min, f"  └─ {subcat}")
+
+            # Clear data button
+            if st.button(f"🗑️ Clear data for {selected_resident}", key="clear_resident_data"):
+                del st.session_state.case_logs[selected_resident]
+                save_case_logs_to_cache(st.session_state.case_logs)
+                st.success(f"Cleared data for {selected_resident}")
+                st.rerun()
 
     else:
-        st.info("No case log data loaded. Upload an ACGME export or enter cases manually above.")
+        st.info("No case log data loaded. Drop an ACGME summary export (ResMinimumDefCat) into the watch folder.")
 
 # Weekly Schedule tab
 with tabs[5]:
