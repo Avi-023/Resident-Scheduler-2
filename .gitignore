@@ -28,3 +28,10 @@ Thumbs.db
 
 # Schedule cache (generated at runtime)
 .schedule_cache.pkl
+.case_logs_cache.pkl
+
+# Import folder tracking
+imports/case_logs/.processed
+imports/case_logs/*.xlsx
+imports/case_logs/*.xls
+imports/case_logs/*.csv

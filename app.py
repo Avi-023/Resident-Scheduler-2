@@ -13,6 +13,66 @@ import altair as alt
 # Data persistence for calendar sharing
 # --------------------------
 SCHEDULE_CACHE_FILE = Path(__file__).parent / ".schedule_cache.pkl"
+CASE_LOG_IMPORT_FOLDER = Path(__file__).parent / "imports" / "case_logs"
+CASE_LOG_CACHE_FILE = Path(__file__).parent / ".case_logs_cache.pkl"
+
+def save_case_logs_to_cache(case_logs: dict):
+    """Save case logs to file for persistence."""
+    try:
+        with open(CASE_LOG_CACHE_FILE, "wb") as f:
+            pickle.dump({"case_logs": case_logs, "saved_at": time.time()}, f)
+    except Exception as e:
+        pass  # Fail silently
+
+def load_case_logs_from_cache():
+    """Load case logs from cache file."""
+    try:
+        if CASE_LOG_CACHE_FILE.exists():
+            with open(CASE_LOG_CACHE_FILE, "rb") as f:
+                data = pickle.load(f)
+                return data.get("case_logs", {})
+    except Exception:
+        pass
+    return {}
+
+def scan_import_folder_for_case_logs():
+    """Scan the import folder for new case log files and import them."""
+    if not CASE_LOG_IMPORT_FOLDER.exists():
+        CASE_LOG_IMPORT_FOLDER.mkdir(parents=True, exist_ok=True)
+        return []
+
+    imported_files = []
+    processed_marker = CASE_LOG_IMPORT_FOLDER / ".processed"
+
+    # Load list of already processed files
+    processed_files = set()
+    if processed_marker.exists():
+        processed_files = set(processed_marker.read_text().strip().split("\n"))
+
+    # Scan for new files
+    for f in CASE_LOG_IMPORT_FOLDER.iterdir():
+        if f.is_file() and f.suffix.lower() in [".xlsx", ".xls", ".csv"] and f.name not in processed_files:
+            try:
+                # Read the file
+                if f.suffix.lower() == ".csv":
+                    df = pd.read_csv(f)
+                else:
+                    df = pd.read_excel(f)
+
+                if not df.empty:
+                    imported_files.append((f.name, df))
+
+                    # Mark as processed
+                    processed_files.add(f.name)
+
+            except Exception as e:
+                pass  # Skip files that can't be read
+
+    # Update processed marker
+    if imported_files:
+        processed_marker.write_text("\n".join(processed_files))
+
+    return imported_files
 
 def save_schedule_to_cache(dailies: dict, schedule_df, roster_df):
     """Save schedule data to file for access by calendar page."""
@@ -2975,20 +3035,58 @@ with tabs[3]:
 # Case Logs tab
 with tabs[4]:
     st.markdown("## 📊 ACGME Case Logs Dashboard")
-    st.caption("Upload case log exports from ACGME to track resident progress toward graduation requirements.")
+    st.caption("Drop case log exports into the watch folder for automatic import.")
 
-    # Initialize case log storage
+    # Initialize case log storage from cache
     if "case_logs" not in st.session_state:
-        st.session_state.case_logs = {}  # {resident_name: DataFrame of cases}
+        st.session_state.case_logs = load_case_logs_from_cache()
 
-    # File upload section
-    with st.expander("📤 Upload Case Log Data", expanded=not st.session_state.case_logs):
+    # Auto-import from watch folder
+    new_imports = scan_import_folder_for_case_logs()
+    if new_imports:
+        for filename, df in new_imports:
+            st.toast(f"📥 Auto-imported: {filename}")
+            # Try to auto-detect columns and import
+            df.columns = df.columns.str.strip()
+
+            # Find resident column
+            resident_col = None
+            for c in df.columns:
+                if any(x in c.lower() for x in ['resident', 'name', 'trainee', 'fellow']):
+                    resident_col = c
+                    break
+            if resident_col is None and len(df.columns) > 0:
+                resident_col = df.columns[0]
+
+            if resident_col:
+                for resident in df[resident_col].unique():
+                    if pd.isna(resident) or str(resident).strip() == "":
+                        continue
+                    res_name = str(resident).strip()
+                    resident_df = df[df[resident_col] == resident].copy()
+                    if res_name not in st.session_state.case_logs:
+                        st.session_state.case_logs[res_name] = resident_df
+                    else:
+                        st.session_state.case_logs[res_name] = pd.concat(
+                            [st.session_state.case_logs[res_name], resident_df]
+                        ).drop_duplicates()
+
+        # Save to cache
+        save_case_logs_to_cache(st.session_state.case_logs)
+        st.success(f"✅ Auto-imported {len(new_imports)} file(s) from watch folder")
+
+    # Watch folder info
+    watch_folder_path = str(CASE_LOG_IMPORT_FOLDER)
+    st.info(f"📁 **Watch folder:** `{watch_folder_path}`\n\nDrop ACGME Excel exports here → they'll import automatically!")
+
+    # File upload section (manual backup option)
+    with st.expander("📤 Manual Upload (alternative)", expanded=False):
         st.markdown("""
 **How to export from ACGME:**
 1. Log into [ACGME ADS](https://apps.acgme.org/connect/login)
 2. Go to **Case Logs** → **Download/Reports**
 3. Select the resident(s) and click **Excel**
-4. Upload the Excel file below
+4. Either drop in the watch folder OR upload below
         """)
 
         uploaded_file = st.file_uploader(
