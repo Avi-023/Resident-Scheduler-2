@@ -213,6 +213,62 @@ try:
 except Exception:
     HAS_PDFPLUMBER = False
 
+try:
+    import pytesseract
+    from pdf2image import convert_from_bytes
+    from PIL import Image
+    HAS_OCR = True
+except Exception:
+    HAS_OCR = False
+
+def parse_pdf_with_ocr(file_buffer, debug=False):
+    """Parse image-based PDF using OCR (Tesseract)."""
+    if not HAS_OCR:
+        if debug:
+            st.error("OCR libraries not available (pytesseract, pdf2image)")
+        return None
+
+    try:
+        file_buffer.seek(0)
+        pdf_bytes = file_buffer.read()
+
+        if debug:
+            st.info("Converting PDF pages to images...")
+
+        # Convert PDF pages to images
+        images = convert_from_bytes(pdf_bytes, dpi=300)
+
+        if debug:
+            st.write(f"Converted {len(images)} pages to images")
+
+        all_text = ""
+        for i, image in enumerate(images):
+            if debug:
+                st.write(f"Running OCR on page {i+1}...")
+
+            # Run OCR on each page
+            page_text = pytesseract.image_to_string(image)
+            all_text += page_text + "\n"
+
+            if debug and page_text.strip():
+                st.markdown(f"**Page {i+1} OCR text (first 1000 chars):**")
+                st.code(page_text[:1000])
+
+        if debug:
+            st.write(f"Total OCR text length: {len(all_text)}")
+
+        if all_text.strip():
+            # Parse the OCR text
+            df = parse_acgme_text(all_text, debug)
+            return df
+
+        return None
+
+    except Exception as e:
+        if debug:
+            st.error(f"OCR error: {e}")
+        return None
+
 def parse_acgme_pdf(file_buffer, debug=False):
     """Parse ACGME case log PDF (Resident Minimum Defined Categories report)."""
     if not HAS_PDFPLUMBER:
@@ -250,8 +306,15 @@ def parse_acgme_pdf(file_buffer, debug=False):
             if df is not None and not df.empty:
                 return df
 
+        # If no text was extracted, try OCR
+        if len(all_text.strip()) == 0:
+            if debug:
+                st.warning("No text found in PDF. Trying OCR...")
+            file_buffer.seek(0)
+            return parse_pdf_with_ocr(file_buffer, debug)
+
         if debug:
-            st.error(f"No tables found and text parsing failed. Text length: {len(all_text)}")
+            st.error(f"Text found but parsing failed. Text length: {len(all_text)}")
         return None
 
     except Exception as e:
@@ -3668,6 +3731,12 @@ Supports PDF and Excel formats.
             key="case_log_upload"
         )
 
+        # Show OCR availability
+        if HAS_OCR:
+            st.caption("OCR enabled for image-based PDFs")
+        else:
+            st.caption("OCR not available - text-based PDFs only")
+
         # Debug mode checkbox
         show_pdf_debug = st.checkbox("Show PDF diagnostic info", value=False, key="pdf_debug_mode")
 
@@ -3682,14 +3751,17 @@ Supports PDF and Excel formats.
                         if show_pdf_debug:
                             file_buffer.seek(0)
                             st.markdown("### PDF Diagnostic Info")
+                            st.write(f"**OCR Available:** {HAS_OCR}")
                             with pdfplumber.open(file_buffer) as pdf:
                                 st.write(f"**Pages:** {len(pdf.pages)}")
+                                has_any_text = False
                                 for i, page in enumerate(pdf.pages):
                                     st.markdown(f"#### Page {i+1}")
 
                                     # Show extracted text
                                     text = page.extract_text()
                                     if text:
+                                        has_any_text = True
                                         st.markdown("**Extracted Text (first 2000 chars):**")
                                         st.code(text[:2000])
                                     else:
@@ -3708,15 +3780,24 @@ Supports PDF and Excel formats.
                                     else:
                                         st.warning("No tables extracted from this page")
 
+                                if not has_any_text:
+                                    st.markdown("---")
+                                    st.info("This appears to be an **image-based PDF**. OCR will be used to extract text.")
+
                             st.markdown("---")
-                            st.markdown("**Copy the text above and share it so I can fix the parser.**")
                             file_buffer.seek(0)
 
-                        df = parse_acgme_pdf(file_buffer, debug=show_pdf_debug)
+                        # Parse the PDF (will auto-fallback to OCR if needed)
+                        with st.spinner("Processing PDF (may use OCR for image-based PDFs)..."):
+                            df = parse_acgme_pdf(file_buffer, debug=show_pdf_debug)
+
                         if df is None or df.empty:
                             if not show_pdf_debug:
                                 st.error("Could not extract data from PDF.")
-                                st.info("**Enable 'Show PDF diagnostic info' above** so we can see what's in the PDF and fix the parser.")
+                                if HAS_OCR:
+                                    st.info("OCR was attempted but could not parse the content. Try Excel format.")
+                                else:
+                                    st.info("**Enable 'Show PDF diagnostic info' above** to see details.")
                     else:
                         st.error("PDF support not available. Please upload Excel format.")
                 elif uploaded_file.name.endswith('.csv'):

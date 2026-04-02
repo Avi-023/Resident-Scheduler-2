@@ -13,6 +13,9 @@ openpyxl>=3.1,<4.0
 
 # PDF parsing for ACGME case logs
 pdfplumber>=0.10,<1.0
+pdf2image>=1.16,<2.0
+pytesseract>=0.3,<1.0
+Pillow>=10.0,<11.0
 
 # Optional optimizer (schedule can be generated without it)
 # pulp>=2.7,<3.0
