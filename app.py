@@ -119,109 +119,6 @@ try:
 except Exception:
     HAS_PDFPLUMBER = False
 
-try:
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-    from googleapiclient.http import MediaIoBaseDownload
-    HAS_GOOGLE_DRIVE = True
-except Exception:
-    HAS_GOOGLE_DRIVE = False
-
-# --------------------------
-# Google Drive Integration
-# --------------------------
-def get_google_drive_service():
-    """Get authenticated Google Drive service using Streamlit secrets."""
-    if not HAS_GOOGLE_DRIVE:
-        return None
-
-    try:
-        # Check if credentials are configured
-        if "google_drive" not in st.secrets:
-            return None
-
-        creds_dict = dict(st.secrets["google_drive"])
-        credentials = service_account.Credentials.from_service_account_info(
-            creds_dict,
-            scopes=['https://www.googleapis.com/auth/drive.readonly']
-        )
-        service = build('drive', 'v3', credentials=credentials, cache_discovery=False)
-        return service
-    except Exception as e:
-        st.warning(f"Google Drive connection failed: {e}")
-        return None
-
-def scan_google_drive_for_case_logs():
-    """Scan Google Drive folder for new ACGME case log files (PDF/Excel)."""
-    service = get_google_drive_service()
-    if not service:
-        return []
-
-    try:
-        # Get folder ID from secrets
-        folder_id = st.secrets.get("google_drive", {}).get("folder_id", "")
-        if not folder_id:
-            return []
-
-        # Load list of already processed files
-        processed_files = set()
-        if "processed_drive_files" not in st.session_state:
-            st.session_state.processed_drive_files = set()
-        processed_files = st.session_state.processed_drive_files
-
-        # Query for PDF and Excel files in the folder
-        query = f"'{folder_id}' in parents and (mimeType='application/pdf' or mimeType='application/vnd.ms-excel' or mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') and trashed=false"
-        results = service.files().list(
-            q=query,
-            fields="files(id, name, mimeType, modifiedTime)",
-            orderBy="modifiedTime desc"
-        ).execute()
-
-        files = results.get('files', [])
-        imported_files = []
-
-        for file_info in files:
-            file_id = file_info['id']
-            file_name = file_info['name']
-            mime_type = file_info['mimeType']
-
-            # Skip already processed files
-            if file_id in processed_files:
-                continue
-
-            try:
-                # Download file content
-                request = service.files().get_media(fileId=file_id)
-                file_buffer = io.BytesIO()
-                downloader = MediaIoBaseDownload(file_buffer, request)
-                done = False
-                while not done:
-                    _, done = downloader.next_chunk()
-
-                file_buffer.seek(0)
-
-                # Parse based on file type
-                if mime_type == 'application/pdf':
-                    df = parse_acgme_pdf(file_buffer)
-                else:
-                    df = pd.read_excel(file_buffer)
-
-                if df is not None and not df.empty:
-                    imported_files.append((file_name, df))
-                    processed_files.add(file_id)
-
-            except Exception as e:
-                pass  # Skip files that can't be read
-
-        # Update session state
-        st.session_state.processed_drive_files = processed_files
-
-        return imported_files
-
-    except Exception as e:
-        st.warning(f"Error scanning Google Drive: {e}")
-        return []
-
 def parse_acgme_pdf(file_buffer):
     """Parse ACGME case log PDF (Resident Minimum Defined Categories report)."""
     if not HAS_PDFPLUMBER:
@@ -3315,13 +3212,7 @@ with tabs[3]:
 # Case Logs tab
 with tabs[4]:
     st.markdown("## 📊 ACGME Case Logs Dashboard")
-
-    # Check if Google Drive is configured
-    drive_configured = HAS_GOOGLE_DRIVE and "google_drive" in st.secrets
-    if drive_configured:
-        st.caption("📧 Email case logs to your inbox → auto-imported from Google Drive")
-    else:
-        st.caption("Drop case log exports into the watch folder for automatic import.")
+    st.caption("Upload ACGME case log exports (PDF or Excel) to track resident progress.")
 
     # Initialize case log storage from cache
     # case_logs stores summary data: {resident: {category: {"total": N, "minimum": M, "subcategories": {...}}}}
@@ -3384,71 +3275,8 @@ with tabs[4]:
                         total_imported += 1
         return total_imported
 
-    # Auto-import from Google Drive (if configured)
-    if drive_configured:
-        drive_imports = scan_google_drive_for_case_logs()
-        if drive_imports:
-            imported_count = process_imported_files(drive_imports, "Google Drive")
-            if imported_count > 0:
-                save_case_logs_to_cache(st.session_state.case_logs)
-                st.success(f"✅ Imported {len(drive_imports)} file(s) from Google Drive")
-
-    # Auto-import from local watch folder (fallback if Drive not configured)
-    if not drive_configured:
-        new_imports = scan_import_folder_for_case_logs()
-        if new_imports:
-            imported_count = process_imported_files(new_imports, "Watch folder")
-            if imported_count > 0:
-                save_case_logs_to_cache(st.session_state.case_logs)
-                st.success(f"✅ Auto-imported {len(new_imports)} file(s) from watch folder")
-
-    # Show import source status
-    if drive_configured:
-        st.success("✅ **Google Drive connected** - Files are auto-imported when emailed to your inbox")
-        with st.expander("📧 Email Import Setup", expanded=False):
-            st.markdown("""
-**How it works:**
-1. Program coordinator exports case logs from ACGME (PDF or Excel)
-2. Coordinator emails the file to your designated inbox
-3. Zapier/Make automatically saves attachments to Google Drive
-4. This app imports them on each page load
-
-**Email address:** *(Set up your own via Zapier)*
-
-**Refresh:** Click the browser refresh button to check for new files.
-            """)
-            if st.button("🔄 Check for new files"):
-                st.rerun()
-    else:
-        watch_folder_path = str(CASE_LOG_IMPORT_FOLDER)
-        st.info(f"📁 **Watch folder:** `{watch_folder_path}`\n\nDrop ACGME exports here → they'll import automatically!")
-
-        with st.expander("📧 Set up Email Import (Google Drive)", expanded=False):
-            st.markdown("""
-**To enable automatic email import:**
-
-1. **Create a Google Cloud Project** → Enable Drive API
-2. **Create a Service Account** → Download JSON credentials
-3. **Create a Google Drive folder** → Share with service account email
-4. **Set up Zapier** → Gmail attachment → Save to Google Drive
-5. **Add secrets to Streamlit Cloud:**
-
-```toml
-[google_drive]
-type = "service_account"
-project_id = "your-project-id"
-private_key_id = "..."
-private_key = "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"
-client_email = "your-service-account@your-project.iam.gserviceaccount.com"
-client_id = "..."
-folder_id = "your-google-drive-folder-id"
-```
-
-See README for detailed setup instructions.
-            """)
-
-    # File upload section (manual backup option)
-    with st.expander("📤 Manual Upload", expanded=False):
+    # File upload section
+    with st.expander("📤 Upload Case Logs", expanded=True):
         st.markdown("""
 **How to export from ACGME:**
 1. Log into [ACGME ADS](https://apps.acgme.org/connect/login)
