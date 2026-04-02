@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+.venv/
+
+# Streamlit secrets (never commit real secrets!)
+.streamlit/secrets.toml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local development
+*.log
+.env
+.env.local
+
+# Schedule cache (generated at runtime)
+.schedule_cache.pkl
+.case_logs_cache.pkl
+
+# Import folder tracking
+imports/case_logs/.processed
+imports/case_logs/*.xlsx
+imports/case_logs/*.xls
+imports/case_logs/*.csv

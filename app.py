@@ -1,11 +1,196 @@
 # app.py
-import io, json, re, math, random, time
+import io, json, re, math, random, time, pickle, os
 from datetime import date, timedelta
 from collections import Counter, defaultdict
+from pathlib import Path
 
 import streamlit as st
 import pandas as pd
 import numpy as np
+import altair as alt
+
+# --------------------------
+# Data persistence for calendar sharing
+# --------------------------
+SCHEDULE_CACHE_FILE = Path(__file__).parent / ".schedule_cache.pkl"
+CASE_LOG_IMPORT_FOLDER = Path(__file__).parent / "imports" / "case_logs"
+CASE_LOG_CACHE_FILE = Path(__file__).parent / ".case_logs_cache.pkl"
+
+def save_case_logs_to_cache(case_logs: dict):
+    """Save case logs to file for persistence."""
+    try:
+        with open(CASE_LOG_CACHE_FILE, "wb") as f:
+            pickle.dump({"case_logs": case_logs, "saved_at": time.time()}, f)
+    except Exception as e:
+        pass  # Fail silently
+
+def load_case_logs_from_cache():
+    """Load case logs from cache file."""
+    try:
+        if CASE_LOG_CACHE_FILE.exists():
+            with open(CASE_LOG_CACHE_FILE, "rb") as f:
+                data = pickle.load(f)
+                return data.get("case_logs", {})
+    except Exception:
+        pass
+    return {}
+
+def scan_import_folder_for_case_logs():
+    """Scan the import folder for new case log files and import them."""
+    if not CASE_LOG_IMPORT_FOLDER.exists():
+        CASE_LOG_IMPORT_FOLDER.mkdir(parents=True, exist_ok=True)
+        return []
+
+    imported_files = []
+    processed_marker = CASE_LOG_IMPORT_FOLDER / ".processed"
+
+    # Load list of already processed files
+    processed_files = set()
+    if processed_marker.exists():
+        processed_files = set(processed_marker.read_text().strip().split("\n"))
+
+    # Scan for new files
+    for f in CASE_LOG_IMPORT_FOLDER.iterdir():
+        if f.is_file() and f.suffix.lower() in [".xlsx", ".xls", ".csv"] and f.name not in processed_files:
+            try:
+                # Read the file
+                if f.suffix.lower() == ".csv":
+                    df = pd.read_csv(f)
+                else:
+                    df = pd.read_excel(f)
+
+                if not df.empty:
+                    imported_files.append((f.name, df))
+
+                    # Mark as processed
+                    processed_files.add(f.name)
+
+            except Exception as e:
+                pass  # Skip files that can't be read
+
+    # Update processed marker
+    if imported_files:
+        processed_marker.write_text("\n".join(processed_files))
+
+    return imported_files
+
+def save_schedule_to_cache(dailies: dict, schedule_df, roster_df):
+    """Save schedule data to file for access by calendar page."""
+    try:
+        data = {
+            "dailies": dailies,
+            "schedule_df": schedule_df,
+            "roster_df": roster_df,
+            "saved_at": time.time()
+        }
+        with open(SCHEDULE_CACHE_FILE, "wb") as f:
+            pickle.dump(data, f)
+    except Exception as e:
+        st.warning(f"Could not save schedule cache: {e}")
+
+def load_schedule_from_cache():
+    """Load schedule data from file."""
+    try:
+        if SCHEDULE_CACHE_FILE.exists():
+            with open(SCHEDULE_CACHE_FILE, "rb") as f:
+                return pickle.load(f)
+    except Exception:
+        pass
+    return None
+
+# --------------------------
+# Schedule Version Management
+# --------------------------
+def save_schedule_snapshot(name: str):
+    """Save current schedule state as a named snapshot."""
+    if "schedule_snapshots" not in st.session_state:
+        st.session_state.schedule_snapshots = {}
+
+    snapshot = {
+        "name": name,
+        "saved_at": time.time(),
+        "roster_table": st.session_state.get("roster_table", pd.DataFrame()).copy(),
+        "schedule_df": st.session_state.get("sched_df", pd.DataFrame()).copy(),
+        "dailies": {k: v.copy() for k, v in st.session_state.get("dailies", {}).items()},
+    }
+    st.session_state.schedule_snapshots[name] = snapshot
+    return snapshot
+
+def load_schedule_snapshot(name: str):
+    """Load a named snapshot into current state."""
+    if "schedule_snapshots" not in st.session_state:
+        return False
+    if name not in st.session_state.schedule_snapshots:
+        return False
+
+    snapshot = st.session_state.schedule_snapshots[name]
+    st.session_state.roster_table = snapshot["roster_table"].copy()
+    st.session_state.sched_df = snapshot["schedule_df"].copy()
+    st.session_state.dailies = {k: v.copy() for k, v in snapshot["dailies"].items()}
+    return True
+
+def export_snapshot_to_json(name: str) -> str:
+    """Export a snapshot to JSON string for download."""
+    if "schedule_snapshots" not in st.session_state:
+        return None
+    if name not in st.session_state.schedule_snapshots:
+        return None
+
+    snapshot = st.session_state.schedule_snapshots[name]
+
+    # Convert DataFrames to JSON-serializable format
+    export_data = {
+        "name": snapshot["name"],
+        "saved_at": snapshot["saved_at"],
+        "roster_table": snapshot["roster_table"].to_dict(orient="records"),
+        "schedule_df": snapshot["schedule_df"].to_dict(orient="split"),
+        "dailies": {k: v.to_dict(orient="split") for k, v in snapshot["dailies"].items()},
+    }
+    return json.dumps(export_data, indent=2)
+
+def import_snapshot_from_json(json_str: str) -> dict:
+    """Import a snapshot from JSON string."""
+    try:
+        data = json.loads(json_str)
+
+        # Reconstruct DataFrames
+        roster_table = pd.DataFrame(data["roster_table"])
+
+        schedule_data = data["schedule_df"]
+        schedule_df = pd.DataFrame(
+            schedule_data["data"],
+            index=schedule_data["index"],
+            columns=schedule_data["columns"]
+        )
+
+        dailies = {}
+        for k, v in data["dailies"].items():
+            dailies[k] = pd.DataFrame(v["data"], index=v["index"], columns=v["columns"])
+
+        snapshot = {
+            "name": data["name"],
+            "saved_at": data.get("saved_at", time.time()),
+            "roster_table": roster_table,
+            "schedule_df": schedule_df,
+            "dailies": dailies,
+        }
+        return snapshot
+    except Exception as e:
+        return None
+
+def get_snapshot_summary(snapshot: dict) -> dict:
+    """Get summary stats for a snapshot."""
+    schedule_df = snapshot.get("schedule_df", pd.DataFrame())
+    roster_df = snapshot.get("roster_table", pd.DataFrame())
+
+    if schedule_df.empty:
+        return {"residents": 0, "blocks": 0}
+
+    return {
+        "residents": len(schedule_df),
+        "blocks": len([c for c in schedule_df.columns if c.startswith("Block")]),
+        "saved_at": snapshot.get("saved_at", 0),
+    }
 
 # --------------------------
 # Optional libraries
@@ -21,6 +206,224 @@ try:
     HAS_PULP = True
 except Exception:
     HAS_PULP = False
+
+try:
+    import pdfplumber
+    HAS_PDFPLUMBER = True
+except Exception:
+    HAS_PDFPLUMBER = False
+
+def parse_acgme_pdf(file_buffer, debug=False):
+    """Parse ACGME case log PDF (Resident Minimum Defined Categories report)."""
+    if not HAS_PDFPLUMBER:
+        if debug:
+            st.error("pdfplumber not installed")
+        return None
+
+    try:
+        file_buffer.seek(0)
+        all_rows = []
+        all_text = ""
+
+        with pdfplumber.open(file_buffer) as pdf:
+            for page in pdf.pages:
+                # Try table extraction first
+                tables = page.extract_tables()
+                for table in tables:
+                    if table:
+                        all_rows.extend(table)
+
+                # Also get text for fallback
+                page_text = page.extract_text()
+                if page_text:
+                    all_text += page_text + "\n"
+
+        # Try table-based parsing first
+        if all_rows:
+            df = parse_pdf_table_rows(all_rows, debug)
+            if df is not None and not df.empty:
+                return df
+
+        # Fall back to text-based parsing
+        if all_text:
+            df = parse_acgme_text(all_text, debug)
+            if df is not None and not df.empty:
+                return df
+
+        if debug:
+            st.error(f"No tables found and text parsing failed. Text length: {len(all_text)}")
+        return None
+
+    except Exception as e:
+        if debug:
+            st.error(f"PDF parse error: {e}")
+        return None
+
+def parse_pdf_table_rows(all_rows, debug=False):
+    """Parse rows extracted from PDF tables."""
+    if not all_rows:
+        return None
+
+    # Find header row (contains "Category" or "Minimum" or "Defined")
+    header_idx = 0
+    for i, row in enumerate(all_rows):
+        if row and any(cell and any(kw in str(cell).lower() for kw in ['category', 'minimum', 'defined']) for cell in row if cell):
+            header_idx = i
+            break
+
+    if header_idx >= len(all_rows):
+        return None
+
+    headers = all_rows[header_idx]
+    data_rows = all_rows[header_idx + 1:]
+
+    # Clean headers - remove None/empty, strip whitespace
+    headers = [str(h).strip() if h else f"Col_{i}" for i, h in enumerate(headers)]
+
+    # Filter out empty rows
+    data_rows = [row for row in data_rows if row and any(cell for cell in row)]
+
+    if not data_rows:
+        return None
+
+    # Ensure all rows have same length as headers
+    cleaned_rows = []
+    for row in data_rows:
+        if len(row) < len(headers):
+            row = list(row) + [None] * (len(headers) - len(row))
+        elif len(row) > len(headers):
+            row = row[:len(headers)]
+        cleaned_rows.append(row)
+
+    df = pd.DataFrame(cleaned_rows, columns=headers)
+
+    if debug:
+        st.write(f"Parsed {len(df)} rows with columns: {list(df.columns)}")
+
+    return df
+
+def parse_acgme_text(text_content, debug=False):
+    """Parse ACGME text content when table extraction fails."""
+    if not text_content:
+        return None
+
+    lines = text_content.strip().split('\n')
+    data = []
+
+    # First pass: find the header line to identify resident columns
+    header_line = None
+    resident_names = []
+    for line in lines:
+        if 'minimum' in line.lower() or 'category' in line.lower():
+            header_line = line
+            # Extract resident names (words after "Minimum" that aren't numbers)
+            parts = re.split(r'\s{2,}', line)
+            for p in parts:
+                p = p.strip()
+                if p and not p.replace(',', '').isdigit() and p.lower() not in ['category', 'minimum', 'defined', 'categories']:
+                    # Likely a resident name
+                    if len(p) > 2 and ' ' in p:  # Names usually have spaces
+                        resident_names.append(p)
+            break
+
+    if debug:
+        st.write(f"Found {len(lines)} lines, resident names: {resident_names}")
+
+    for line in lines:
+        line_stripped = line.strip()
+        if not line_stripped:
+            continue
+
+        # Skip header-like lines
+        if 'minimum' in line_stripped.lower() and 'category' in line_stripped.lower():
+            continue
+        if line_stripped.lower().startswith('page '):
+            continue
+
+        # Try to parse lines with format: "Category Name    Minimum    Count1    Count2..."
+        # Split by multiple spaces or tabs
+        parts = re.split(r'\s{2,}|\t+', line_stripped)
+
+        if len(parts) >= 2:
+            # Separate text parts from number parts
+            nums = []
+            text_parts = []
+
+            for p in parts:
+                p = p.strip()
+                # Check if it's a number (possibly with commas)
+                clean_p = p.replace(',', '').replace('.', '')
+                if clean_p.isdigit():
+                    nums.append(int(p.replace(',', '')))
+                elif p and not clean_p.isdigit():
+                    text_parts.append(p)
+
+            if nums and text_parts:
+                category = ' '.join(text_parts)
+                # Skip total/summary rows
+                if 'total' in category.lower() and 'major' not in category.lower():
+                    continue
+
+                row_data = {'Category': category}
+                if len(nums) >= 1:
+                    row_data['Minimum'] = nums[0]
+                if len(nums) >= 2:
+                    # Additional columns are resident counts
+                    if resident_names:
+                        for i, name in enumerate(resident_names):
+                            if i + 1 < len(nums):
+                                row_data[name] = nums[i + 1]
+                    else:
+                        row_data['Count'] = nums[1]
+
+                data.append(row_data)
+
+    if data:
+        df = pd.DataFrame(data)
+        if debug:
+            st.write(f"Text parsing found {len(df)} rows")
+        return df
+
+    return None
+
+def _old_parse_acgme_text(text_content):
+    """Legacy parser - kept for reference."""
+    if not text_content:
+        return None
+
+    lines = text_content.strip().split('\n')
+    data = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        parts = re.split(r'\s{2,}', line)
+        if len(parts) >= 2:
+            try:
+                nums = []
+                text_parts = []
+                for p in parts:
+                    p = p.strip()
+                    if p.replace(',', '').isdigit():
+                        nums.append(int(p.replace(',', '')))
+                    else:
+                        text_parts.append(p)
+
+                if nums and text_parts:
+                    category = ' '.join(text_parts)
+                    data.append({
+                        'Category': category,
+                        'Minimum': nums[0] if len(nums) > 0 else 0,
+                        'Count': nums[1] if len(nums) > 1 else nums[0]
+                    })
+            except:
+                pass
+
+    if data:
+        return pd.DataFrame(data)
+    return None
 
 # --------------------------
 # Colors & styling
@@ -40,6 +443,398 @@ PALETTE = {
 }
 WHITE_TEXT = {"nights", "chief", "vascular", "red_green"}
 BOLD_TEXT  = {"icu", "vascular", "red_green"}
+
+# Dropdown options for rotation assignments (Yearly tab)
+ROTATION_OPTIONS = [
+    "",  # Allow blank/empty
+    "Gold",
+    "Red/Green",
+    "Vascular",
+    "Breast",
+    "Chief",
+    "ICU",
+    "Floor",
+    "Nights",
+    "Elective",
+    "Pittsburgh",
+    "Vacation",
+]
+
+# Dropdown options for daily assignments (Daily Blocks tab)
+DAILY_OPTIONS = [
+    "",  # Allow blank/empty
+    "Gold",
+    "Red/Green",
+    "Vascular",
+    "Breast",
+    "Chief",
+    "ICU",
+    "Floor",
+    "Nights",
+    "Elective",
+    "Pittsburgh",
+    "Vacation",
+    "Personal Day",
+    "Interview",
+    "ATLS",
+    "Conference",
+    "Surgical Jeopardy",
+    "Cadaver Lab",
+    "Superservice",
+    "F/Su",
+    "Sa",
+]
+
+# --------------------------
+# Attending Physicians & Teams
+# --------------------------
+TEAMS = {
+    "Gold": ["Dr. Morrissey", "Dr. Sleet", "Dr. Dumire", "Dr. Silvis"],
+    "Red/Green": ["Dr. Duke", "Dr. Curfman"],
+    "Vascular": ["Dr. Tretter", "Dr. Dekornfeld"],
+    "Breast": ["Dr. Arlow"],
+}
+
+# Other specialties (not primary teams, but available for manual assignment)
+OTHER_SPECIALTIES = {
+    "Cardiothoracic": ["Dr. Sherwal", "Dr. Mavridis"],
+    "Plastic Surgery": ["Dr. Shayesteh", "Dr. Rollins"],
+    "Urology": ["Dr. Chason"],
+}
+
+ALL_ATTENDINGS = {}
+for team, docs in TEAMS.items():
+    for doc in docs:
+        ALL_ATTENDINGS[doc] = team
+for specialty, docs in OTHER_SPECIALTIES.items():
+    for doc in docs:
+        ALL_ATTENDINGS[doc] = specialty
+
+# --------------------------
+# Clinic Coverage Rules
+# --------------------------
+CLINIC_RULES = {
+    "Gold": {
+        "covers_clinic": True,
+        "min_residents": 1,
+        "max_residents": 3,
+        "pgy5_half_day_only": True,
+        "cross_cover_from": ["Red/Green"],  # Can borrow from Red if needed
+    },
+    "Red/Green": {
+        "covers_clinic": True,
+        "min_residents": 1,
+        "max_residents": 3,
+        "pgy5_half_day_only": True,
+        "cross_cover_from": ["Gold"],  # Can borrow from Gold if needed
+    },
+    "Vascular": {
+        "covers_clinic": False,  # Residents do NOT cover vascular clinic
+    },
+    "Breast": {
+        "covers_clinic": True,
+        "min_residents": 1,
+        "max_residents": 1,
+        "daily_except_or": True,  # Every day except operative days
+        "pgy5_half_day_only": True,
+    },
+}
+
+# Attending-specific preferences
+ATTENDING_PREFERENCES = {
+    "Dr. Curfman": {
+        "clinic_residents_preferred": 2,  # Prefers 2-3 residents
+        "clinic_residents_max": 3,
+    },
+}
+
+# --------------------------
+# ACGME General Surgery Defined Categories & Minimums
+# Based on ACGME/ABS requirements
+# --------------------------
+# ACGME General Surgery Defined Categories (matches ACGME Case Log System export format)
+ACGME_CATEGORIES = {
+    "Skin and Soft Tissue": {
+        "minimum": 25,
+        "subcategories": {}
+    },
+    "Breast": {
+        "minimum": 40,
+        "subcategories": {
+            "Mastectomy": {"minimum": 5},
+            "Axilla": {"minimum": 5},
+        }
+    },
+    "Head and Neck": {
+        "minimum": 25,
+        "subcategories": {}
+    },
+    "Alimentary Tract": {
+        "minimum": 180,
+        "subcategories": {
+            "Esophagus": {"minimum": 5},
+            "Stomach": {"minimum": 10},
+            "Small Intestine": {"minimum": 20},
+            "Large Intestine": {"minimum": 40},
+            "Appendix": {"minimum": 30},
+            "Anorectal": {"minimum": 20},
+            "Liver": {"minimum": 5},
+            "Biliary": {"minimum": 35},
+            "Pancreas": {"minimum": 3},
+            "Spleen": {"minimum": 3},
+        }
+    },
+    "Abdomen": {
+        "minimum": 85,
+        "subcategories": {
+            "Abdominal - Other": {"minimum": 0},
+            "Hernia - Inguinal": {"minimum": 40},
+            "Hernia - Femoral": {"minimum": 0},
+            "Hernia - Ventral/Incisional": {"minimum": 20},
+            "Hernia - Other Abdominal Wall": {"minimum": 0},
+        }
+    },
+    "Endocrine": {
+        "minimum": 15,
+        "subcategories": {
+            "Thyroid": {"minimum": 5},
+            "Parathyroid": {"minimum": 3},
+            "Adrenal": {"minimum": 0},
+        }
+    },
+    "Vascular": {
+        "minimum": 25,
+        "subcategories": {
+            "Carotid": {"minimum": 0},
+            "Abdominal Aorta": {"minimum": 0},
+            "Visceral Vessels": {"minimum": 0},
+            "Lower Extremity Bypass": {"minimum": 0},
+            "Amputation": {"minimum": 0},
+            "Vascular Access for Dialysis": {"minimum": 10},
+            "Vein": {"minimum": 0},
+        }
+    },
+    "Pediatric": {
+        "minimum": 15,
+        "subcategories": {}
+    },
+    "Thoracic": {
+        "minimum": 20,
+        "subcategories": {
+            "Chest Wall": {"minimum": 0},
+            "Lung/Pleura": {"minimum": 0},
+            "Mediastinum": {"minimum": 0},
+        }
+    },
+    "Trauma": {
+        "minimum": 75,
+        "subcategories": {
+            "Operative Trauma": {"minimum": 20},
+            "Non-operative Trauma": {"minimum": 40},
+        }
+    },
+    "Critical Care": {
+        "minimum": 100,
+        "subcategories": {}
+    },
+    "Basic Laparoscopic": {
+        "minimum": 100,
+        "subcategories": {}
+    },
+    "Complex Laparoscopic": {
+        "minimum": 50,
+        "subcategories": {}
+    },
+    "Endoscopy": {
+        "minimum": 85,
+        "subcategories": {
+            "Upper GI Endoscopy": {"minimum": 35},
+            "Lower GI Endoscopy": {"minimum": 50},
+        }
+    },
+}
+
+# Total case minimum
+ACGME_TOTAL_MINIMUM = 850
+
+def parse_acgme_summary_report(df):
+    """
+    Parse ACGME summary report format (ResMinimumDefCat export).
+
+    The format has columns like:
+    - Category (with indented subcategories)
+    - Minimum
+    - One or more resident name columns with their totals
+
+    Returns: dict of {resident_name: {category: {"total": N, "subcategories": {...}}}}
+    """
+    result = {}
+
+    if df is None or df.empty:
+        return result
+
+    # Clean column names
+    df.columns = df.columns.str.strip()
+
+    # Find the category column (usually first column or "Category")
+    cat_col = None
+    for col in df.columns:
+        if 'category' in col.lower() or col == df.columns[0]:
+            cat_col = col
+            break
+
+    if cat_col is None:
+        cat_col = df.columns[0]
+
+    # Find minimum column
+    min_col = None
+    for col in df.columns:
+        if 'minimum' in col.lower() or 'min' in col.lower():
+            min_col = col
+            break
+
+    # Resident columns are any columns after category/minimum that contain numbers
+    resident_cols = []
+    for col in df.columns:
+        if col != cat_col and col != min_col:
+            # Check if this column has numeric data
+            try:
+                if df[col].dropna().apply(lambda x: str(x).replace(',', '').isdigit() if pd.notna(x) else True).any():
+                    resident_cols.append(col)
+            except:
+                pass
+
+    # If no obvious resident columns found, take remaining columns
+    if not resident_cols:
+        resident_cols = [c for c in df.columns if c not in [cat_col, min_col]]
+
+    # Initialize result for each resident
+    for res_col in resident_cols:
+        result[res_col] = {}
+
+    # Parse each row
+    current_category = None
+    for _, row in df.iterrows():
+        cat_value = str(row.get(cat_col, "")).strip()
+
+        if not cat_value or cat_value.lower() in ['nan', 'none', '']:
+            continue
+
+        # Detect if this is a subcategory (indented or has specific markers)
+        is_subcategory = cat_value.startswith('    ') or cat_value.startswith('\t')
+        cat_name = cat_value.strip()
+
+        # Skip total rows
+        if 'total' in cat_name.lower() and 'major' in cat_name.lower():
+            continue
+        if cat_name.lower() == 'total':
+            continue
+
+        # Get minimum value
+        minimum = 0
+        if min_col:
+            try:
+                min_val = row.get(min_col, 0)
+                minimum = int(float(str(min_val).replace(',', ''))) if pd.notna(min_val) else 0
+            except:
+                pass
+
+        # Process each resident's value
+        for res_col in resident_cols:
+            try:
+                val = row.get(res_col, 0)
+                count = int(float(str(val).replace(',', ''))) if pd.notna(val) else 0
+            except:
+                count = 0
+
+            if is_subcategory and current_category:
+                # Add as subcategory under current category
+                if current_category not in result[res_col]:
+                    result[res_col][current_category] = {"total": 0, "minimum": 0, "subcategories": {}}
+                result[res_col][current_category]["subcategories"][cat_name] = {
+                    "count": count,
+                    "minimum": minimum
+                }
+            else:
+                # Main category
+                current_category = cat_name
+                if cat_name not in result[res_col]:
+                    result[res_col][cat_name] = {"total": 0, "minimum": minimum, "subcategories": {}}
+                result[res_col][cat_name]["total"] = count
+                result[res_col][cat_name]["minimum"] = minimum
+
+    return result
+
+# Common CPT code to category mappings (subset - kept for manual entry)
+CPT_TO_CATEGORY = {
+    # Alimentary Tract - Appendix
+    "44950": ("ALIMENTARY TRACT", "Appendix"),  # Appendectomy
+    "44960": ("ALIMENTARY TRACT", "Appendix"),  # Appendectomy with abscess
+    "44970": ("ALIMENTARY TRACT", "Appendix"),  # Lap appendectomy
+
+    # Alimentary Tract - Biliary
+    "47562": ("ALIMENTARY TRACT", "Biliary"),   # Lap cholecystectomy
+    "47563": ("ALIMENTARY TRACT", "Biliary"),   # Lap cholecystectomy with cholangiography
+    "47600": ("ALIMENTARY TRACT", "Biliary"),   # Cholecystectomy
+    "47610": ("ALIMENTARY TRACT", "Biliary"),   # Cholecystectomy with exploration
+
+    # Alimentary Tract - Large Intestine
+    "44140": ("ALIMENTARY TRACT", "Large Intestine"),  # Colectomy, partial
+    "44141": ("ALIMENTARY TRACT", "Large Intestine"),  # Colectomy with colostomy
+    "44143": ("ALIMENTARY TRACT", "Large Intestine"),  # Colectomy with anastomosis
+    "44204": ("ALIMENTARY TRACT", "Large Intestine"),  # Lap colectomy, partial
+    "44207": ("ALIMENTARY TRACT", "Large Intestine"),  # Lap colectomy with anastomosis
+
+    # Alimentary Tract - Small Intestine
+    "44120": ("ALIMENTARY TRACT", "Small Intestine"),  # Enterectomy
+    "44121": ("ALIMENTARY TRACT", "Small Intestine"),  # Enterectomy, additional
+
+    # Alimentary Tract - Anorectal
+    "46255": ("ALIMENTARY TRACT", "Anorectal"),  # Hemorrhoidectomy
+    "46260": ("ALIMENTARY TRACT", "Anorectal"),  # Hemorrhoidectomy, complex
+    "46270": ("ALIMENTARY TRACT", "Anorectal"),  # Fistulotomy
+
+    # Hernia
+    "49505": ("ABDOMEN", "Hernia - Inguinal"),    # Inguinal hernia repair
+    "49507": ("ABDOMEN", "Hernia - Inguinal"),    # Inguinal hernia, incarcerated
+    "49520": ("ABDOMEN", "Hernia - Inguinal"),    # Inguinal hernia, recurrent
+    "49650": ("ABDOMEN", "Hernia - Inguinal"),    # Lap inguinal hernia repair
+    "49560": ("ABDOMEN", "Hernia - Ventral/Incisional"),  # Incisional hernia repair
+    "49565": ("ABDOMEN", "Hernia - Ventral/Incisional"),  # Incisional hernia, recurrent
+    "49652": ("ABDOMEN", "Hernia - Ventral/Incisional"),  # Lap ventral hernia repair
+    "49653": ("ABDOMEN", "Hernia - Ventral/Incisional"),  # Lap incisional hernia repair
+
+    # Breast
+    "19301": ("BREAST", "Biopsy/Partial Mastectomy"),  # Partial mastectomy
+    "19302": ("BREAST", "Biopsy/Partial Mastectomy"),  # Partial mastectomy with lymph node
+    "19303": ("BREAST", "Mastectomy"),            # Simple mastectomy
+    "19307": ("BREAST", "Mastectomy"),            # Modified radical mastectomy
+    "38525": ("BREAST", "Sentinel Node"),          # Sentinel node biopsy
+
+    # Endocrine
+    "60240": ("ENDOCRINE", "Thyroid"),            # Thyroidectomy
+    "60500": ("ENDOCRINE", "Parathyroid"),        # Parathyroidectomy
+    "60650": ("ENDOCRINE", "Adrenal"),            # Adrenalectomy, lap
+
+    # Vascular
+    "35301": ("VASCULAR", "Carotid"),             # Carotid endarterectomy
+    "36830": ("VASCULAR", "Dialysis Access"),     # AV fistula creation
+    "36832": ("VASCULAR", "Dialysis Access"),     # AV fistula revision
+    "36831": ("VASCULAR", "Dialysis Access"),     # AV graft
+
+    # Endoscopy
+    "43239": ("ENDOSCOPY", "EGD"),                # EGD with biopsy
+    "43235": ("ENDOSCOPY", "EGD"),                # EGD diagnostic
+    "45378": ("ENDOSCOPY", "Colonoscopy"),        # Colonoscopy diagnostic
+    "45380": ("ENDOSCOPY", "Colonoscopy"),        # Colonoscopy with biopsy
+    "45385": ("ENDOSCOPY", "Colonoscopy"),        # Colonoscopy with polypectomy
+
+    # Laparoscopic (also counted in primary category)
+    "47562": ("LAPAROSCOPIC/MINIMALLY INVASIVE", "Lap Cholecystectomy"),
+    "44970": ("LAPAROSCOPIC/MINIMALLY INVASIVE", "Lap Appendectomy"),
+    "49650": ("LAPAROSCOPIC/MINIMALLY INVASIVE", "Lap Hernia"),
+    "44204": ("LAPAROSCOPIC/MINIMALLY INVASIVE", "Lap Colorectal"),
+}
 
 def norm_label(v: str) -> str:
     if not isinstance(v, str) or not v.strip():
@@ -133,16 +928,64 @@ def block_has_late_january(s: date, e: date, ay_start: date) -> bool:
 # Lite-mode friendly table
 # --------------------------
 def show_table(df: pd.DataFrame, key: str, *, editable: bool, hide_index: bool=False,
-               styler_subset=None, daily=False, index_name_hint="Resident") -> pd.DataFrame:
+               styler_subset=None, daily=False, index_name_hint="Resident",
+               dropdown_columns=None, dropdown_options=None) -> pd.DataFrame:
     if HAS_ARROW:
         if editable:
-            return st.data_editor(
-                df,
-                use_container_width=True,
-                key=key,
-                hide_index=hide_index,
-                num_rows="dynamic"  # enable add/remove rows
-            )
+            # For daily tables with tuple columns, flatten to strings for dropdown support
+            if daily and isinstance(df.columns, pd.MultiIndex):
+                # Flatten tuple columns to strings
+                flat_df = df.copy()
+                flat_df.columns = [f"{a}|{b}" for (a, b) in flat_df.columns]
+
+                # Build column config for ALL flattened columns
+                column_config = {}
+                if dropdown_options:
+                    for col in flat_df.columns:
+                        column_config[col] = st.column_config.SelectboxColumn(
+                            col,
+                            options=dropdown_options,
+                            required=False,
+                        )
+
+                edited_flat = st.data_editor(
+                    flat_df,
+                    use_container_width=True,
+                    key=key,
+                    hide_index=hide_index,
+                    num_rows="dynamic",
+                    column_config=column_config if column_config else None
+                )
+
+                # Convert back to MultiIndex columns
+                tuples = []
+                for c in edited_flat.columns:
+                    if isinstance(c, str) and "|" in c:
+                        a, b = c.split("|", 1)
+                        tuples.append((a, b))
+                    else:
+                        tuples.append((c, ""))
+                edited_flat.columns = pd.MultiIndex.from_tuples(tuples, names=["Weekday", "Date"])
+                return edited_flat
+            else:
+                # Non-daily tables: use dropdown columns as specified
+                column_config = {}
+                if dropdown_columns and dropdown_options:
+                    for col in dropdown_columns:
+                        if col in df.columns:
+                            column_config[col] = st.column_config.SelectboxColumn(
+                                col,
+                                options=dropdown_options,
+                                required=False,
+                            )
+                return st.data_editor(
+                    df,
+                    use_container_width=True,
+                    key=key,
+                    hide_index=hide_index,
+                    num_rows="dynamic",
+                    column_config=column_config if column_config else None
+                )
         else:
             if styler_subset is not None:
                 st.dataframe(df.style.applymap(style_each_cell, subset=styler_subset),
@@ -243,7 +1086,7 @@ def normalize_roster_input(df: pd.DataFrame) -> pd.DataFrame:
     if include_col and include_col != "Include?": df = df.rename(columns={include_col: "Include?"})
 
     # Optional attribute columns respected by engine
-    for c in ["Max Nights","Avoid Services","PTO Windows","Notes","Lock"]:
+    for c in ["Notes","Vacation 1","Vacation 2","Vacation 3"]:
         if c not in df.columns: df[c] = ""
 
     # Ensure required cols
@@ -278,7 +1121,7 @@ def normalize_roster_input(df: pd.DataFrame) -> pd.DataFrame:
     bad = df["Resident"].str.strip().str.lower().isin(["", "none", "na", "n/a"])
     df = df[~bad].reset_index(drop=True)
 
-    cols = ["Resident","PGY","Prelim","Include?","Max Nights","Avoid Services","PTO Windows","Notes","Lock"]
+    cols = ["Resident","PGY","Prelim","Include?","Notes","Vacation 1","Vacation 2","Vacation 3"]
     return df[[c for c in cols if c in df.columns]].reset_index(drop=True)
 
 def validate_roster(df: pd.DataFrame) -> None:
@@ -307,11 +1150,10 @@ def ensure_roster_size(df: pd.DataFrame, size: int) -> pd.DataFrame:
             "PGY": ["PGY-1"] * add,
             "Prelim": ["N"] * add,
             "Include?": ["Y"] * add,
-            "Max Nights": ["" for _ in range(add)],
-            "Avoid Services": ["" for _ in range(add)],
-            "PTO Windows": ["" for _ in range(add)],
             "Notes": ["" for _ in range(add)],
-            "Lock": ["" for _ in range(add)],
+            "Vacation 1": ["" for _ in range(add)],
+            "Vacation 2": ["" for _ in range(add)],
+            "Vacation 3": ["" for _ in range(add)],
         })
         df = pd.concat([df, add_df], ignore_index=True)
     elif len(df) > size:
@@ -350,7 +1192,7 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
     # carry forward user-fixed entries
     if base_fixed is not None and not base_fixed.empty:
         base_fixed = base_fixed.reindex(index=names, columns=headers)
-        mask = base_fixed.notna() & (base_fixed.astype(str).str.strip() != "")
+        mask = base_fixed.notna() & (base_fixed.apply(lambda col: col.astype(str).str.strip()) != "")
         schedule_df[mask] = base_fixed[mask]
 
     # Assignment reasons
@@ -395,10 +1237,12 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
     PG3_ONLY_PGH          = bool(constraints.get("pg3_pittsburgh", True))
     PGH_BLOCK_BLACKLIST   = set(int(x) for x in constraints.get("pgh_block_blacklist", []))
 
-    # Vascular 3rd-member per-resident cap
-    vasc_third_cap = int(constraints.get("vascular_third_cap_per_resident", 1))
-    vasc_third_used = Counter()
     vasc_junior_counts = Counter()  # track PGY-2/3 used as vascular juniors
+    vasc_intern_counts = Counter()  # track PGY-1 used as vascular interns
+
+    # Gold/Red/Green fairness tracking by role
+    gold_counts = {"Senior": Counter(), "Junior": Counter(), "Intern": Counter()}
+    rg_counts = {"Senior": Counter(), "Junior": Counter(), "Intern": Counter()}
 
     # Night float tracking
     st.session_state.setdefault("_nf_counts", Counter())
@@ -488,6 +1332,7 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
                 counts[n],
                 repeat_penalty(n, bi, label),
                 senior_same_year_penalty(n, bi, label),
+                rng.random(),  # Random tiebreaker for fairness
                 n
             )
         )[0]
@@ -528,6 +1373,9 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
 
         # Helper: block allowed under current policy
         def _block_allowed(t: int, honor_blacklist: bool) -> bool:
+            # Block 1 (index 0) is never allowed for Pittsburgh
+            if t == 0:
+                return False
             if honor_blacklist and (t in PGH_BLOCK_BLACKLIST):
                 return False
             s,e = blocks[t]
@@ -637,6 +1485,38 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
             # Not solvable even without blacklist; leave for checks to flag
             log_reason(reasons, "(PGH planner)", headers[0], "Unable to schedule all PGY-3 Pittsburgh runs under hard constraints")
 
+    # ========= Pre-plan Breast: ensure every PGY-2+ resident gets at least 1 block =========
+    breast_eligible = [n for n in names if roster_map[n]["PGY"] in {"PGY-2", "PGY-3", "PGY-4", "PGY-5"}]
+    breast_assigned = {n: 0 for n in breast_eligible}
+
+    # Check for any pre-existing Breast assignments
+    for n in breast_eligible:
+        for hdr in headers:
+            if schedule_df.loc[n, hdr] == "Breast":
+                breast_assigned[n] += 1
+
+    # Assign one Breast block to each PGY-2+ resident who doesn't have one yet
+    # Shuffle to ensure fairness in block selection
+    residents_needing_breast = [n for n in breast_eligible if breast_assigned[n] == 0]
+    rng.shuffle(residents_needing_breast)
+
+    for n in residents_needing_breast:
+        # Find a block where this resident is not yet assigned and Breast is not taken
+        available_blocks = []
+        for bi, hdr in enumerate(headers):
+            # Check if resident is unassigned this block and no one else has Breast
+            if pd.isna(schedule_df.loc[n, hdr]) or str(schedule_df.loc[n, hdr]).strip() == "":
+                breast_count_this_block = int((schedule_df[hdr] == "Breast").sum())
+                if breast_count_this_block < BREAST_MAX:
+                    available_blocks.append(bi)
+
+        if available_blocks:
+            # Pick the block where this resident has the fewest other commitments coming up
+            chosen_bi = rng.choice(available_blocks)
+            schedule_df.loc[n, headers[chosen_bi]] = "Breast"
+            breast_assigned[n] += 1
+            log_reason(reasons, n, headers[chosen_bi], "Breast pre-assigned (ensuring all PGY-2+ get at least 1)")
+
     # ---------------- Per-block assignment ----------------
     for bi,(bs,be) in enumerate(blocks):
         hdr = headers[bi]
@@ -717,12 +1597,38 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
                 st.session_state["_nf_role_counts"][pick][role] += 1
                 log_reason(reasons, pick, hdr, f"Nights as {role} (role-fair; spacing respected; avoid consecutive)")
 
-        # Floor (HARD): PGY-1 only
-        assign_first([n for n in names if roster_map[n]["PGY"]=="PGY-1" and n not in locked_rows], bi, "Floor")
+        # Floor (HARD): PGY-1 only - prefer interns with MORE Vascular so those with fewer are available for Vascular
+        floor_interns = [n for n in names if roster_map[n]["PGY"]=="PGY-1"
+                         and n not in locked_rows
+                         and pd.isna(schedule_df.loc[n, hdr])
+                         and not is_unavailable(n, roster_map[n]["PGY"], "Floor", bi)
+                         and not would_exceed_run(n, bi, "Floor")]
+        if floor_interns:
+            # Prefer interns who already have MORE Vascular (negative count), so those with fewer stay available
+            pick = sorted(floor_interns, key=lambda n:(-vasc_intern_counts[n],
+                                                        int((schedule_df.loc[n]=="Floor").sum()),
+                                                        repeat_penalty(n, bi, "Floor"),
+                                                        rng.random(), n))[0]
+            schedule_df.loc[pick, hdr] = "Floor"
+            log_reason(reasons, pick, hdr, "Floor (PGY-1; prefer those with more Vascular)")
 
         # --------- Vascular baseline BEFORE RG/Gold seeding (attempt S/J/I; must include a Senior) ---------
         assign_first([n for n in names if is_senior(n) and n not in locked_rows], bi, "Vascular")  # Senior required (hard rule checked later)
-        assign_first([n for n in names if is_intern(n) and n not in locked_rows], bi, "Vascular")
+
+        # Vascular intern: pick the intern with fewest Vascular assignments for even distribution
+        avail_interns_for_vasc = [n for n in names if is_intern(n)
+                                  and n not in locked_rows
+                                  and pd.isna(schedule_df.loc[n, hdr])
+                                  and not is_unavailable(n, roster_map[n]["PGY"], "Vascular", bi)
+                                  and not would_exceed_run(n, bi, "Vascular")]
+        if avail_interns_for_vasc:
+            pick = sorted(avail_interns_for_vasc, key=lambda n:(vasc_intern_counts[n],
+                                                                 int((schedule_df.loc[n]=="Vascular").sum()),
+                                                                 repeat_penalty(n, bi, "Vascular"),
+                                                                 rng.random(), n))[0]
+            schedule_df.loc[pick, hdr] = "Vascular"
+            vasc_intern_counts[pick] += 1
+            log_reason(reasons, pick, hdr, "Vascular intern (PGY-1 fairness)")
         if count_team_here(bi,"Vascular") >= 2 and count_team_here(bi,"Vascular") < VASC_MAX:
             avail_for_vasc = [n for n in names if pd.isna(schedule_df.loc[n, hdr])
                               and n not in locked_rows
@@ -744,15 +1650,34 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
             assign_first([n for n in names if roster_map[n]["PGY"] in {"PGY-2","PGY-3","PGY-4","PGY-5"} and n not in locked_rows], bi, "Breast")
 
         # --------- Seed Gold & Red/Green to achieve S/J/I (attempts) and ensure Senior presence (hard) ---------
-        # Gold: Senior, Junior, Intern (in that order)
-        assign_first([n for n in names if is_senior(n) and n not in locked_rows], bi, "Gold")
-        assign_first([n for n in names if is_junior(n) and n not in locked_rows], bi, "Gold")
-        assign_first([n for n in names if is_intern(n) and n not in locked_rows], bi, "Gold")
+        def assign_with_fairness(pool, bi, label, role, counter_dict):
+            """Assign using fairness counter as primary sort key."""
+            hdr = headers[bi]
+            cand = [n for n in pool if pd.isna(schedule_df.loc[n, hdr])
+                    and not is_unavailable(n, roster_map[n]["PGY"], label, bi)
+                    and not would_violate_senior_cap(n, bi, label)
+                    and not would_exceed_run(n, bi, label)]
+            if not cand:
+                return None
+            pick = sorted(cand, key=lambda n:(counter_dict[role][n],
+                                               int((schedule_df.loc[n]==label).sum()),
+                                               repeat_penalty(n, bi, label),
+                                               senior_same_year_penalty(n, bi, label),
+                                               rng.random(), n))[0]
+            schedule_df.loc[pick, hdr] = label
+            counter_dict[role][pick] += 1
+            log_reason(reasons, pick, hdr, f"{label} {role} (fairness-tracked)")
+            return pick
 
-        # Red/Green: Senior, Junior, Intern (in that order)
-        assign_first([n for n in names if is_senior(n) and n not in locked_rows], bi, "Red/Green")
-        assign_first([n for n in names if is_junior(n) and n not in locked_rows], bi, "Red/Green")
-        assign_first([n for n in names if is_intern(n) and n not in locked_rows], bi, "Red/Green")
+        # Gold: Senior, Junior, Intern (in that order) with fairness tracking
+        assign_with_fairness([n for n in names if is_senior(n) and n not in locked_rows], bi, "Gold", "Senior", gold_counts)
+        assign_with_fairness([n for n in names if is_junior(n) and n not in locked_rows], bi, "Gold", "Junior", gold_counts)
+        assign_with_fairness([n for n in names if is_intern(n) and n not in locked_rows], bi, "Gold", "Intern", gold_counts)
+
+        # Red/Green: Senior, Junior, Intern (in that order) with fairness tracking
+        assign_with_fairness([n for n in names if is_senior(n) and n not in locked_rows], bi, "Red/Green", "Senior", rg_counts)
+        assign_with_fairness([n for n in names if is_junior(n) and n not in locked_rows], bi, "Red/Green", "Junior", rg_counts)
+        assign_with_fairness([n for n in names if is_intern(n) and n not in locked_rows], bi, "Red/Green", "Intern", rg_counts)
 
         # Priority fill with caps + hard min/max on Gold/RG; ICU min
         def fill_to(lbl,tgt,cap=None):
@@ -1012,6 +1937,167 @@ def build_dailies_from_yearly(schedule_df: pd.DataFrame, start_date: date):
     return dailies
 
 # --------------------------
+# Vacation auto-fill from Roster
+# --------------------------
+def parse_vacation_spec(spec: str, blocks: list, start_date: date):
+    """
+    Parse a vacation specification and return a list of (block_index, weekday_dates) tuples.
+
+    Supported formats:
+    - "Block 3", "B3", "block3" - refers to block index 3 (1-based: Block 1 = first block)
+    - "7/1/2025" or "07/01/2025" - a specific date (fills the week containing that date)
+    - "7/1-7/5" or "7/1/2025-7/5/2025" - a date range
+
+    Returns: list of (block_index, list_of_dates) where dates are strings like "07/01/2025"
+    """
+    if not isinstance(spec, str) or not spec.strip():
+        return []
+
+    spec = spec.strip()
+    results = []
+
+    # Try to parse as block reference: "Block 3", "B3", "block 3", etc.
+    block_match = re.match(r"^(?:block\s*)?b?(\d+)$", spec.lower().strip())
+    if block_match:
+        block_num = int(block_match.group(1))
+        # Convert from 1-based to 0-based index
+        bi = block_num - 1
+        if 0 <= bi < len(blocks):
+            s, e = blocks[bi]
+            # Get all weekdays in this block
+            weekday_dates = []
+            d = s
+            while d <= e:
+                if d.weekday() < 5:  # Monday=0 to Friday=4
+                    weekday_dates.append(d.strftime("%m/%d/%Y"))
+                d += timedelta(days=1)
+            results.append((bi, weekday_dates))
+        return results
+
+    # Try to parse as date or date range
+    date_patterns = [
+        r"(\d{1,2}/\d{1,2}/\d{4})",  # 7/1/2025 or 07/01/2025
+        r"(\d{1,2}/\d{1,2})",         # 7/1 (assumes current academic year)
+    ]
+
+    # Check for date range (date-date or date to date)
+    range_match = re.match(r"(\d{1,2}/\d{1,2}(?:/\d{4})?)\s*[-–to]+\s*(\d{1,2}/\d{1,2}(?:/\d{4})?)", spec)
+    if range_match:
+        start_str, end_str = range_match.groups()
+        try:
+            # Parse start date
+            if "/" in start_str and start_str.count("/") == 1:
+                m, d = map(int, start_str.split("/"))
+                y = start_date.year if m >= start_date.month else start_date.year + 1
+                start_d = date(y, m, d)
+            else:
+                parts = start_str.split("/")
+                m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
+                start_d = date(y, m, d)
+
+            # Parse end date
+            if "/" in end_str and end_str.count("/") == 1:
+                m, d = map(int, end_str.split("/"))
+                y = start_date.year if m >= start_date.month else start_date.year + 1
+                end_d = date(y, m, d)
+            else:
+                parts = end_str.split("/")
+                m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
+                end_d = date(y, m, d)
+
+            # Find weekdays in range and which blocks they belong to
+            d = start_d
+            while d <= end_d:
+                if d.weekday() < 5:  # Weekday
+                    # Find which block this date belongs to
+                    for bi, (bs, be) in enumerate(blocks):
+                        if bs <= d <= be:
+                            results.append((bi, [d.strftime("%m/%d/%Y")]))
+                            break
+                d += timedelta(days=1)
+        except Exception:
+            pass
+        return results
+
+    # Try single date
+    single_date_match = re.match(r"(\d{1,2}/\d{1,2}(?:/\d{4})?)", spec)
+    if single_date_match:
+        date_str = single_date_match.group(1)
+        try:
+            if date_str.count("/") == 1:
+                m, d = map(int, date_str.split("/"))
+                y = start_date.year if m >= start_date.month else start_date.year + 1
+                target_d = date(y, m, d)
+            else:
+                parts = date_str.split("/")
+                m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
+                target_d = date(y, m, d)
+
+            # Fill the week containing this date (Mon-Fri)
+            # Find the Monday of that week
+            monday = target_d - timedelta(days=target_d.weekday())
+            weekday_dates = []
+            for i in range(5):  # Mon-Fri
+                wd = monday + timedelta(days=i)
+                weekday_dates.append(wd.strftime("%m/%d/%Y"))
+
+            # Find which block contains most of these dates
+            for bi, (bs, be) in enumerate(blocks):
+                if bs <= target_d <= be:
+                    results.append((bi, weekday_dates))
+                    break
+        except Exception:
+            pass
+
+    return results
+
+def apply_vacation_from_roster(dailies: dict, roster_df: pd.DataFrame, start_date: date):
+    """
+    Apply vacation entries from Roster's Vacation 1/2/3 columns to Daily Blocks.
+
+    This fills in "Vacation" for the weekdays specified in each resident's vacation columns.
+    """
+    blocks = build_blocks(start_date, 13)
+    headers = [hdr_for_block(s, e) for (s, e) in blocks]
+
+    roster = normalize_roster_input(roster_df)
+    roster = roster[roster["Include?"].str.upper().eq("Y")].reset_index(drop=True)
+
+    for _, row in roster.iterrows():
+        resident = row["Resident"]
+
+        for vac_col in ["Vacation 1", "Vacation 2", "Vacation 3"]:
+            if vac_col not in roster.columns:
+                continue
+            spec = row.get(vac_col, "")
+            if not spec or str(spec).strip() == "" or str(spec).lower() == "nan":
+                continue
+
+            parsed = parse_vacation_spec(str(spec), blocks, start_date)
+            for bi, date_list in parsed:
+                if bi < 0 or bi >= len(blocks):
+                    continue
+                block_hdr = headers[bi]
+                if block_hdr not in dailies:
+                    continue
+                daily_df = dailies[block_hdr]
+                if resident not in daily_df.index:
+                    continue
+
+                # Fill in vacation for the specified dates
+                for date_str in date_list:
+                    for col in daily_df.columns:
+                        # col is tuple (weekday, date_string)
+                        if isinstance(col, tuple) and len(col) == 2:
+                            weekday, col_date = col
+                            if weekday in ("Saturday", "Sunday"):
+                                continue  # Don't fill weekends
+                            if col_date == date_str:
+                                daily_df.loc[resident, col] = "Vacation"
+
+    return dailies
+
+# --------------------------
 # Weekend call assignment
 # --------------------------
 def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_date: date, constraints: dict, roster_df: pd.DataFrame):
@@ -1026,18 +2112,62 @@ def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_dat
     excluded_base=set(map(norm_label, constraints.get("exclude_from_call", [])))
 
     call_year=Counter()
+    # Track calls separately by role for fairer distribution within each group
+    call_by_role = {"Senior": Counter(), "Junior": Counter(), "Intern": Counter()}
+    # Track F/Su and Sa calls separately for even distribution of each type
+    fsu_calls = Counter()  # F/Su calls per resident
+    sa_calls = Counter()   # Sa calls per resident
     issues = st.session_state.setdefault("forced_call_issues", [])
 
     last_global_wknd = defaultdict(lambda: -999)
     def global_week_index(bi, wk): return bi*4 + wk
 
-    def pick(pool, need, block_ctr, bi, wk):
+    # Random generator for fair tiebreaking
+    call_rng = random.Random(int(constraints.get("random_seed", 0) or 0))
+
+    def pick(pool, need, block_ctr, bi, wk, call_type_counter):
         pool = [n for n in pool if block_ctr[n]<2]
-        pool.sort(key=lambda n:(call_year[n], -(global_week_index(bi,wk) - last_global_wknd[n]), n))
-        for n in pool:
-            if need == "Senior" and _role(n)=="Senior": return n
-            if need == "Junior" and _role(n) in {"Junior","Senior"}: return n
-            if need == "Intern" and _role(n) in {"Intern","Junior","Senior"}: return n
+
+        # For Junior slot, strongly prefer actual juniors (PGY-2/3) for even distribution
+        if need == "Junior":
+            # First try to pick from actual juniors only, sorted by their call counts
+            junior_pool = [n for n in pool if _role(n) == "Junior"]
+            if junior_pool:
+                # Primary sort: total calls (call_year) to balance across all juniors
+                # Secondary: role-specific count, then call type, then spacing
+                junior_pool.sort(key=lambda n:(call_year[n], call_by_role["Junior"][n], call_type_counter[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                return junior_pool[0]
+            # Fall back to seniors if no juniors available
+            senior_pool = [n for n in pool if _role(n) == "Senior"]
+            if senior_pool:
+                senior_pool.sort(key=lambda n:(call_year[n], call_type_counter[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                return senior_pool[0]
+            return None
+
+        # For Senior slot, pick from seniors sorted by their call counts
+        if need == "Senior":
+            senior_pool = [n for n in pool if _role(n) == "Senior"]
+            if senior_pool:
+                # Primary sort: total calls to balance across all seniors
+                senior_pool.sort(key=lambda n:(call_year[n], call_by_role["Senior"][n], call_type_counter[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                return senior_pool[0]
+            return None
+
+        # For Intern slot, prefer actual interns
+        if need == "Intern":
+            intern_pool = [n for n in pool if _role(n) == "Intern"]
+            if intern_pool:
+                # Primary sort: total calls to balance across all interns
+                intern_pool.sort(key=lambda n:(call_year[n], call_by_role["Intern"][n], call_type_counter[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                return intern_pool[0]
+            # Fall back to juniors, then seniors
+            for fallback_role in ["Junior", "Senior"]:
+                fallback_pool = [n for n in pool if _role(n) == fallback_role]
+                if fallback_pool:
+                    fallback_pool.sort(key=lambda n:(call_year[n], call_type_counter[n], -(global_week_index(bi,wk) - last_global_wknd[n]), call_rng.random(), n))
+                    return fallback_pool[0]
+            return None
+
         return None
 
     for bi,(s,e) in enumerate(blocks):
@@ -1051,39 +2181,43 @@ def auto_assign_weekend_call(dailies: dict, schedule_df: pd.DataFrame, start_dat
             base_pool=[n for n in names if norm_label(schedule_df.loc[n, hdr]) not in excluded_base]
             used=set()
 
-            # F/Su
+            # F/Su - use fsu_calls counter for even F/Su distribution
             team=[]
             for need in ("Senior","Junior","Intern"):
-                p=pick([n for n in base_pool if n not in used], need, block_ctr, bi, wk)
+                p=pick([n for n in base_pool if n not in used], need, block_ctr, bi, wk, fsu_calls)
                 if p: team.append(p); used.add(p)
             if len(team)<3:
                 pool_any=[n for n in names if n not in used and block_ctr[n]<2]
                 while len(team)<3 and pool_any:
                     need=("Senior","Junior","Intern")[len(team)]
-                    p=pick(pool_any, need, block_ctr, bi, wk)
+                    p=pick(pool_any, need, block_ctr, bi, wk, fsu_calls)
                     if not p: break
                     team.append(p); used.add(p); pool_any.remove(p)
                     issues.append(("Forced override", hdr, f"Week {wk+1}: {p} → F/Su to ensure coverage"))
             for n in team:
                 daily.loc[n, [sucol]]="F/Su"; block_ctr[n]+=1; call_year[n]+=1; last_global_wknd[n]=global_week_index(bi,wk)
+                call_by_role[_role(n)][n] += 1  # Track by role for fairness
+                fsu_calls[n] += 1  # Track F/Su specifically
             if len(team)<3:
                 issues.append(("Call coverage shortfall", hdr, f"Week {wk+1}: F/Su {len(team)}/3"))
 
-            # Sa
+            # Sa - use sa_calls counter for even Sa distribution
             team=[]
             for need in ("Senior","Junior","Intern"):
-                p=pick([n for n in base_pool if n not in used], need, block_ctr, bi, wk)
+                p=pick([n for n in base_pool if n not in used], need, block_ctr, bi, wk, sa_calls)
                 if p: team.append(p); used.add(p)
             if len(team)<3:
                 pool_any=[n for n in names if n not in used and block_ctr[n]<2]
                 while len(team)<3 and pool_any:
                     need=("Senior","Junior","Intern")[len(team)]
-                    p=pick(pool_any, need, block_ctr, bi, wk)
+                    p=pick(pool_any, need, block_ctr, bi, wk, sa_calls)
                     if not p: break
                     team.append(p); used.add(p); pool_any.remove(p)
                     issues.append(("Forced override", hdr, f"Week {wk+1}: {p} → Sa to ensure coverage"))
             for n in team:
                 daily.loc[n, [scol]]="Sa"; block_ctr[n]+=1; call_year[n]+=1; last_global_wknd[n]=global_week_index(bi,wk)
+                call_by_role[_role(n)][n] += 1  # Track by role for fairness
+                sa_calls[n] += 1  # Track Sa specifically
             if len(team)<3:
                 issues.append(("Call coverage shortfall", hdr, f"Week {wk+1}: Sa {len(team)}/3"))
 
@@ -1380,6 +2514,66 @@ def compute_checks(schedule_df: pd.DataFrame, dailies: dict, roster_df: pd.DataF
 
     out["heat_rotations"] = rot_counts_df
     out["heat_calls"] = call_df
+
+    # Compliance checks: 4 days off per block, 3 vacation weeks, 2 personal days
+    compliance_rows = []
+    for n in names:
+        # Count vacation weeks (from dailies - 5 consecutive weekdays with "Vacation")
+        vacation_weeks = 0
+        personal_days = 0
+        days_off_by_block = {}
+
+        for block_name, daily_df in dailies.items():
+            if n not in daily_df.index:
+                continue
+            row_data = daily_df.loc[n]
+
+            # Count days off in this block
+            days_off = 0
+            vacation_days_in_block = 0
+            for (weekday, dstr), val in row_data.items():
+                val_str = str(val).strip() if pd.notna(val) else ""
+                # Weekend days off = blank (no F/Su or Sa call)
+                if weekday in ("Saturday", "Sunday"):
+                    if val_str == "" or val_str.lower() not in ("f/su", "sa"):
+                        days_off += 1
+                else:
+                    # Weekdays off = blank or Vacation
+                    if val_str == "" or val_str.lower() == "vacation":
+                        days_off += 1
+                    if val_str.lower() == "vacation":
+                        vacation_days_in_block += 1
+                # Count personal days anywhere
+                if val_str.lower() == "personal day":
+                    personal_days += 1
+                    days_off += 1  # Personal days also count as days off
+
+            days_off_by_block[block_name] = days_off
+            # A vacation week is 5 consecutive vacation days (Mon-Fri)
+            if vacation_days_in_block >= 5:
+                vacation_weeks += vacation_days_in_block // 5
+
+        # Check if all blocks have at least 4 days off
+        blocks_with_4_days_off = sum(1 for d in days_off_by_block.values() if d >= 4)
+        total_blocks = len(days_off_by_block)
+        all_blocks_have_4_off = blocks_with_4_days_off == total_blocks if total_blocks > 0 else False
+
+        compliance_rows.append({
+            "Resident": n,
+            "PGY": roster_map[n]["PGY"],
+            "4+ Days Off (All Blocks)": "Yes" if all_blocks_have_4_off else f"No ({blocks_with_4_days_off}/{total_blocks})",
+            "Vacation Weeks": vacation_weeks,
+            "3 Vacation Weeks": "Yes" if vacation_weeks >= 3 else f"No ({vacation_weeks}/3)",
+            "Personal Days": personal_days,
+            "2 Personal Days": "Yes" if personal_days >= 2 else f"No ({personal_days}/2)",
+        })
+
+    compliance_df = (pd.DataFrame(compliance_rows)
+                     .assign(_ord=lambda d: d["PGY"].map(order))
+                     .sort_values(["_ord", "Resident"])
+                     .drop(columns=["_ord"]).reset_index(drop=True))
+    out["compliance"] = compliance_df
+
     return out
 
 # --------------------------
@@ -1551,6 +2745,161 @@ def to_amion_csv(dailies) -> bytes:
     pd.DataFrame(rows, columns=["Resident","Date","Assignment"]).to_csv(out, index=False)
     return out.getvalue().encode("utf-8")
 
+# --------------------------
+# ICS Calendar Generation
+# --------------------------
+def _ics_escape(text: str) -> str:
+    """Escape special characters for ICS format."""
+    if not text:
+        return ""
+    return text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+def _format_ics_date(d: date) -> str:
+    """Format date as ICS DATE value (YYYYMMDD)."""
+    return d.strftime("%Y%m%d")
+
+def _generate_uid(resident: str, date_str: str, assignment: str) -> str:
+    """Generate a unique ID for an event."""
+    import hashlib
+    content = f"{resident}-{date_str}-{assignment}"
+    return hashlib.md5(content.encode()).hexdigest()[:16] + "@resident-scheduler"
+
+def generate_ics_for_resident(resident: str, dailies: dict, schedule_df: pd.DataFrame = None) -> bytes:
+    """
+    Generate an ICS calendar file for a single resident.
+
+    Creates all-day events for each assignment (rotation, call, vacation, etc.)
+    """
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Resident Scheduler//Surgery Schedule//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        f"X-WR-CALNAME:{_ics_escape(resident)} - Surgery Schedule",
+    ]
+
+    # Track events to consolidate consecutive same-assignment days
+    events = []  # list of (start_date, end_date, assignment, is_call)
+
+    for block_name, df in dailies.items():
+        if resident not in df.index:
+            continue
+
+        for (weekday, dstr), val in df.loc[resident].items():
+            if not isinstance(val, str) or not val.strip():
+                continue
+            val = val.strip()
+            if not val:
+                continue
+
+            # Parse date string (MM/DD/YYYY)
+            try:
+                parts = dstr.split("/")
+                m, d, y = int(parts[0]), int(parts[1]), int(parts[2])
+                event_date = date(y, m, d)
+            except Exception:
+                continue
+
+            # Determine if this is a call assignment
+            is_call = val.lower() in ("f/su", "sa", "call")
+
+            events.append((event_date, val, is_call))
+
+    # Sort events by date
+    events.sort(key=lambda x: x[0])
+
+    # Consolidate consecutive days with same assignment (except calls)
+    consolidated = []
+    i = 0
+    while i < len(events):
+        start_date, assignment, is_call = events[i]
+
+        # Calls are always single-day events
+        if is_call:
+            consolidated.append((start_date, start_date, assignment, True))
+            i += 1
+            continue
+
+        # For rotations, find consecutive days with same assignment
+        end_date = start_date
+        j = i + 1
+        while j < len(events):
+            next_date, next_assign, next_is_call = events[j]
+            # Check if next day and same assignment (not a call)
+            if (next_date - end_date).days == 1 and next_assign == assignment and not next_is_call:
+                end_date = next_date
+                j += 1
+            else:
+                break
+
+        consolidated.append((start_date, end_date, assignment, False))
+        i = j
+
+    # Generate ICS events
+    now_stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+
+    for start_d, end_d, assignment, is_call in consolidated:
+        uid = _generate_uid(resident, start_d.isoformat(), assignment)
+
+        # For all-day events, DTEND should be the day AFTER the last day
+        dtend = end_d + timedelta(days=1)
+
+        # Create summary with call indicator
+        if is_call:
+            summary = f"📞 {assignment} Call"
+            description = f"Weekend call assignment: {assignment}"
+        else:
+            summary = assignment
+            description = f"Rotation: {assignment}"
+
+        # Add color hint in description based on rotation
+        color_hint = PALETTE.get(norm_label(assignment), "")
+        if color_hint:
+            description += f"\\nColor: {color_hint}"
+
+        lines.extend([
+            "BEGIN:VEVENT",
+            f"UID:{uid}",
+            f"DTSTAMP:{now_stamp}",
+            f"DTSTART;VALUE=DATE:{_format_ics_date(start_d)}",
+            f"DTEND;VALUE=DATE:{_format_ics_date(dtend)}",
+            f"SUMMARY:{_ics_escape(summary)}",
+            f"DESCRIPTION:{_ics_escape(description)}",
+        ])
+
+        # Add categories for filtering
+        if is_call:
+            lines.append("CATEGORIES:Call,Weekend")
+        else:
+            lines.append(f"CATEGORIES:Rotation,{_ics_escape(assignment)}")
+
+        lines.append("END:VEVENT")
+
+    lines.append("END:VCALENDAR")
+
+    # ICS requires CRLF line endings
+    return "\r\n".join(lines).encode("utf-8")
+
+def generate_all_ics_zip(dailies: dict, schedule_df: pd.DataFrame = None) -> bytes:
+    """Generate a ZIP file containing ICS files for all residents."""
+    import zipfile
+
+    output = io.BytesIO()
+    residents = set()
+    for df in dailies.values():
+        residents.update(df.index)
+    residents = sorted([r for r in residents if isinstance(r, str) and r.strip() and r.lower() != "none"])
+
+    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for resident in residents:
+            ics_data = generate_ics_for_resident(resident, dailies, schedule_df)
+            # Sanitize filename
+            safe_name = re.sub(r'[^\w\s-]', '', resident).strip().replace(' ', '_')
+            zf.writestr(f"{safe_name}_schedule.ics", ics_data)
+
+    return output.getvalue()
+
 # =========================
 # Streamlit UI
 # =========================
@@ -1590,8 +2939,7 @@ with st.sidebar:
 
 if not HAS_ARROW:
     st.warning("Running in Lite mode (no pyarrow). Editable tables use CSV text areas; exports still work.")
-if not HAS_PULP:
-    st.info("Optional optimizer (PuLP) not detected. Install 'pulp' to enable ILP polish.")
+# PuLP warning removed - optimizer feature is hidden from UI
 
 with st.sidebar:
     st.markdown("### Academic Year")
@@ -1599,41 +2947,19 @@ with st.sidebar:
     ay_start=st.date_input("Start date (Block 1 begins Monday)", value=default_start)
 
     st.markdown("---"); st.markdown("### Constraints")
-    # Removed per instructions:
-    # - Require Senior on Gold
-    # - Red/Green must include Sr + Jr + Intern
-    # - Vascular = Senior + Junior/Intern
-    st.checkbox("Allow a 4th resident on Red/Green", True, key="rg_allow_fourth")  # UI parity; hard rule enforces 3–4 regardless
 
-    st.number_input("Gold team cap", min_value=1, max_value=10, value=4, key="gold_cap")
+    st.markdown("**Team size caps**")
+    st.number_input("Gold team cap", min_value=3, max_value=10, value=4, key="gold_cap")
     st.number_input("Red/Green team cap", min_value=3, max_value=10, value=4, key="rg_cap")
     st.number_input("Vascular team cap", min_value=2, max_value=5, value=3, key="vascular_cap")
 
     st.markdown("**Service minima (per block)**")
     gold_min = st.number_input("Gold min", 0, 6, 3, key="gold_min")
     rg_min   = st.number_input("Red/Green min", 0, 6, 3, key="rg_min")
-    icu_min  = st.number_input("ICU min", 0, 2, 1, key="icu_min")
-
-    st.markdown("**Night Float**")
-    st.checkbox("Enable Night Float (Sr+Jr+Intern every block)", True, key="nightfloat")
-    st.caption("NF rules: Sr+Jr+Intern each block; ≥1-block gap preferred; avoid PGY-5 last block.")
 
     st.markdown("**Pittsburgh rotation**")
-    st.checkbox("Enable Pittsburgh rotation", True, key="enable_pittsburgh")
-    st.checkbox("Pittsburgh = PGY-3 only", True, key="pg3_pittsburgh")
     st.text_input("Pittsburgh block blacklist (comma-separated indices 0–12)", value="", key="pgh_block_blacklist_txt")
-    st.caption("Planner assigns **3 consecutive blocks** for **all PGY-3 residents** (capacity 1 per block), avoiding **late Jan (Jan 16–31)**. If no solution with your blacklist, it will retry **ignoring** it.")
-
-    st.markdown("**Fairness/Soft penalties**")
-    st.slider("Penalty: NF gap violations", 0.0, 10.0, 3.0, 0.5, key="penalty_nf_gap")
-    st.slider("Penalty: PGY-5 on Nights (last block)", 0.0, 10.0, 5.0, 0.5, key="penalty_pgy5_last")
-    st.slider("Penalty: consecutive same rotation", 0.0, 10.0, 2.0, 0.5, key="penalty_consecutive_repeat")
-
-    st.markdown("**Elig. calendars JSON (per service)**")
-    st.text_area("Example: {\"Vascular\": {\"PGY-1\": [0,1], \"names\": {\"Jane Doe\": [3]}}}",
-                 value="", key="eligibility_calendars_json")
-
-    st.number_input("Max times a resident can be the 3rd on Vascular", 0, 5, 1, key="vascular_third_cap")
+    st.caption("Planner assigns **3 consecutive blocks** for **all PGY-3 residents** (capacity 1 per block), avoiding **late Jan (Jan 16–31)**.")
 
     st.markdown("**Weekend Call – Exclude these rotations**")
     st.multiselect(
@@ -1648,8 +2974,8 @@ with st.sidebar:
     with c1:
         if st.button("➕ Add blank row"):
             row = pd.DataFrame([{"Resident":"", "PGY":"PGY-1", "Prelim":"N", "Include?":"Y",
-                                 "Max Nights":"","Avoid Services":"","PTO Windows":"","Notes":"","Lock":""}])
-            st.session_state.roster_table = pd.concat([st.session_state.get("roster_table", pd.DataFrame(columns=["Resident","PGY","Prelim","Include?","Max Nights","Avoid Services","PTO Windows","Notes","Lock"])), row], ignore_index=True)
+                                 "Notes":"","Vacation 1":"","Vacation 2":"","Vacation 3":""}])
+            st.session_state.roster_table = pd.concat([st.session_state.get("roster_table", pd.DataFrame(columns=["Resident","PGY","Prelim","Include?","Notes","Vacation 1","Vacation 2","Vacation 3"])), row], ignore_index=True)
     with c2:
         if st.button("🧹 Remove empty/None rows"):
             if "roster_table" in st.session_state:
@@ -1662,159 +2988,183 @@ with st.sidebar:
             if "roster_table" in st.session_state:
                 st.session_state.roster_table = ensure_roster_size(st.session_state.roster_table, st.session_state.roster_size)
             else:
-                st.session_state.roster_table = ensure_roster_size(pd.DataFrame(columns=["Resident","PGY","Prelim","Include?","Max Nights","Avoid Services","PTO Windows","Notes","Lock"]), st.session_state.roster_size)
+                st.session_state.roster_table = ensure_roster_size(pd.DataFrame(columns=["Resident","PGY","Prelim","Include?","Notes","Vacation 1","Vacation 2","Vacation 3"]), st.session_state.roster_size)
 
-    st.checkbox("Auto-assign weekend call after edits", True, key="auto_call")
+    # Hidden: these features are still functional but not exposed in UI
+    # st.checkbox("Use optimizer (polish with ILP if available)", False, key="use_optimizer")
+    # st.number_input("Optimizer time limit (sec)", 1, 30, 8, key="opt_time_limit")
+    # st.number_input("Random seed (tie-breaks)", 0, 10_000, 0, key="random_seed")
+    # scenario_name = st.text_input("Scenario name (save snapshot)", value="", key="scenario_name")
+    # Set default values for hidden controls
+    if "use_optimizer" not in st.session_state:
+        st.session_state.use_optimizer = False
+    if "opt_time_limit" not in st.session_state:
+        st.session_state.opt_time_limit = 8
+    if "random_seed" not in st.session_state:
+        st.session_state.random_seed = 0
 
+    # --------------------------
+    # Schedule Versions
+    # --------------------------
     st.markdown("---")
-    st.checkbox("Use optimizer (polish with ILP if available)", False, key="use_optimizer")
-    st.number_input("Optimizer time limit (sec)", 1, 30, 8, key="opt_time_limit")
-    st.number_input("Random seed (tie-breaks)", 0, 10_000, 0, key="random_seed")
-    scenario_name = st.text_input("Scenario name (save snapshot)", value="", key="scenario_name")
+    st.markdown("### Schedule Versions")
 
-# Editable roster (seed)
-st.subheader("Roster (editable)")
+    # Initialize snapshots storage
+    if "schedule_snapshots" not in st.session_state:
+        st.session_state.schedule_snapshots = {}
+
+    # Save current schedule as snapshot
+    snapshot_name = st.text_input("Version name:", key="snapshot_name_input", placeholder="e.g., Draft 1 - more ICU")
+    if st.button("💾 Save Current as Version"):
+        if snapshot_name.strip():
+            save_schedule_snapshot(snapshot_name.strip())
+            st.success(f"Saved: {snapshot_name}")
+        else:
+            st.warning("Enter a version name")
+
+    # List saved versions
+    if st.session_state.schedule_snapshots:
+        st.markdown("**Saved Versions:**")
+        for name, snap in st.session_state.schedule_snapshots.items():
+            summary = get_snapshot_summary(snap)
+            saved_time = time.strftime("%H:%M", time.localtime(summary["saved_at"])) if summary["saved_at"] else ""
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.caption(f"📋 {name} ({summary['residents']} residents) - {saved_time}")
+            with col2:
+                if st.button("Load", key=f"load_{name}"):
+                    load_schedule_snapshot(name)
+                    st.success(f"Loaded: {name}")
+                    st.rerun()
+
+    # Download/Upload versions
+    st.markdown("---")
+    st.markdown("**Import/Export**")
+
+    # Download dropdown and button
+    if st.session_state.schedule_snapshots:
+        download_choice = st.selectbox("Download version:", list(st.session_state.schedule_snapshots.keys()), key="download_version_choice")
+        json_data = export_snapshot_to_json(download_choice)
+        if json_data:
+            safe_name = re.sub(r'[^\w\s-]', '', download_choice).strip().replace(' ', '_')
+            st.download_button(
+                "⬇️ Download as File",
+                data=json_data,
+                file_name=f"schedule_{safe_name}.json",
+                mime="application/json",
+                key="download_snapshot_btn"
+            )
+
+    # Upload version
+    uploaded_version = st.file_uploader("Upload version file:", type=["json"], key="upload_version_file")
+    if uploaded_version:
+        try:
+            json_str = uploaded_version.read().decode("utf-8")
+            imported = import_snapshot_from_json(json_str)
+            if imported:
+                import_name = imported["name"]
+                # Avoid overwriting - add suffix if exists
+                if import_name in st.session_state.schedule_snapshots:
+                    import_name = f"{import_name} (imported)"
+                st.session_state.schedule_snapshots[import_name] = imported
+                st.success(f"Imported: {import_name}")
+                st.rerun()
+            else:
+                st.error("Could not parse version file")
+        except Exception as e:
+            st.error(f"Error importing: {e}")
+
+# Initialize default roster (display moved to Yearly tab)
 _default_roster=pd.DataFrame([
-    ["Avi Robinson","PGY-5","N","Y","","","","",""],
-    ["Kathleen Koesarie","PGY-5","N","Y","","","","",""],
-    ["Arruj Hassan","PGY-5","N","Y","","","","",""],
-    ["Shirin Siddiqi","PGY-5","N","Y","","","","",""],
-    ["Kayla Orr","PGY-4","N","Y","","","","",""],
-    ["Makayla Gologram","PGY-4","N","Y","","","","",""],
-    ["Adrianne Pellegrini","PGY-4","N","Y","","","","",""],
-    ["Zane Hamden","PGY-3","N","Y","","","","",""],
-    ["Lauren Delong","PGY-3","N","Y","","","","",""],
-    ["Brittany Steffens","PGY-3","N","Y","","","","",""],
-    ["Zoe Wecht","PGY-2","N","Y","","","","",""],
-    ["Jessica Marks","PGY-2","N","Y","","","","",""],
-    ["Jacob Allenabaugh","PGY-2","N","Y","","","","",""],
-    ["Intern 1","PGY-1","N","Y","","","","",""],
-    ["Intern 2","PGY-1","N","Y","","","","",""],
-    ["Intern 3","PGY-1","N","Y","","","","",""],
-    ["Intern 4 (Prelim)","PGY-1","Y","Y","","","","",""],
-    ["Intern 5 (Prelim)","PGY-1","Y","Y","","","","",""],
-], columns=["Resident","PGY","Prelim","Include?","Max Nights","Avoid Services","PTO Windows","Notes","Lock"])
+    ["Avi Robinson","PGY-5","N","Y","","","",""],
+    ["Kathleen Koesarie","PGY-5","N","Y","","","",""],
+    ["Arruj Hassan","PGY-5","N","Y","","","",""],
+    ["Shirin Siddiqi","PGY-5","N","Y","","","",""],
+    ["Kayla Orr","PGY-4","N","Y","","","",""],
+    ["Makayla Gologram","PGY-4","N","Y","","","",""],
+    ["Adrianne Pellegrini","PGY-4","N","Y","","","",""],
+    ["Zane Hamden","PGY-3","N","Y","","","",""],
+    ["Lauren Delong","PGY-3","N","Y","","","",""],
+    ["Brittany Steffens","PGY-3","N","Y","","","",""],
+    ["Zoe Wecht","PGY-2","N","Y","","","",""],
+    ["Jessica Marks","PGY-2","N","Y","","","",""],
+    ["Jacob Allenabaugh","PGY-2","N","Y","","","",""],
+    ["Intern 1","PGY-1","N","Y","","","",""],
+    ["Intern 2","PGY-1","N","Y","","","",""],
+    ["Intern 3","PGY-1","N","Y","","","",""],
+    ["Intern 4 (Prelim)","PGY-1","Y","Y","","","",""],
+    ["Intern 5 (Prelim)","PGY-1","Y","Y","","","",""],
+], columns=["Resident","PGY","Prelim","Include?","Notes","Vacation 1","Vacation 2","Vacation 3"])
 
 if "roster_table" not in st.session_state:
     st.session_state.roster_table = _default_roster.copy()
 
-roster = show_table(st.session_state.roster_table, "roster_editor", editable=True, hide_index=True, index_name_hint="Resident")
-st.session_state.roster_table = roster.copy()
+# Edit mode toggle (used across all tabs)
+edit_mode = st.toggle("Edit mode", value=True, help="ON = tables editable; OFF = preview (weekday colors only)")
 
-# Side: quick fairness indicator (call Gini)
-if "dailies" in st.session_state:
-    call_totals = []
-    for n in st.session_state.schedule_df.index:
-        FSu=Sa=0
-        for d in st.session_state.dailies.values():
-            vals=d.loc[n].to_numpy(); FSu += (vals=="F/Su").sum(); Sa += (vals=="Sa").sum()
-        call_totals.append(FSu+Sa)
-    st.sidebar.markdown(f"**Call balance (Gini):** {gini(call_totals):.3f}")
+# Define generate_schedule function for use in Yearly tab
+def generate_schedule_from_roster():
+    """Generate schedule from current roster. Called from Yearly tab."""
+    try:
+        roster_raw = st.session_state.roster_table.copy()
+        roster_raw["Resident"] = roster_raw["Resident"].astype(str)
+        bad_names = roster_raw["Resident"].str.strip().str.lower().isin(["", "none", "na", "n/a"])
+        roster_raw = roster_raw[~bad_names].reset_index(drop=True)
+        roster_raw["PGY"] = roster_raw["PGY"].astype(str)
+        roster_raw["PGY"] = roster_raw["PGY"].str.replace(r"\(.*?\)", "", regex=True)
+        roster_raw["PGY"] = roster_raw["PGY"].str.upper().str.replace(r"PGY\s*([1-5])", r"PGY-\1", regex=True)
+        roster_raw["PGY"] = roster_raw["PGY"].str.replace(r"^\s*([1-5])\s*$", r"PGY-\1", regex=True)
+        roster_norm = normalize_roster_input(roster_raw)
+        validate_roster(roster_norm)
+    except Exception as e:
+        st.error(f"Roster problem: {e}")
+        return False
 
-st.markdown("---")
-colA, colB, colC = st.columns([1,1,1])
-with colA:
-    if st.button("Generate schedule from roster"):
-        try:
-            roster_raw = st.session_state.roster_table.copy()
-            roster_raw["Resident"] = roster_raw["Resident"].astype(str)
-            bad_names = roster_raw["Resident"].str.strip().str.lower().isin(["", "none", "na", "n/a"])
-            roster_raw = roster_raw[~bad_names].reset_index(drop=True)
-            roster_raw["PGY"] = roster_raw["PGY"].astype(str)
-            roster_raw["PGY"] = roster_raw["PGY"].str.replace(r"\(.*?\)", "", regex=True)
-            roster_raw["PGY"] = roster_raw["PGY"].str.upper().str.replace(r"PGY\s*([1-5])", r"PGY-\1", regex=True)
-            roster_raw["PGY"] = roster_raw["PGY"].str.replace(r"^\s*([1-5])\s*$", r"PGY-\1", regex=True)
-            roster_norm = normalize_roster_input(roster_raw)
-            validate_roster(roster_norm)
-        except Exception as e:
-            st.error(f"Roster problem: {e}"); st.stop()
+    # Parse Pittsburgh blacklist
+    try:
+        blk_txt = (st.session_state.pgh_block_blacklist_txt or "").strip()
+        blk_list = []
+        for tok in parse_csv_list(blk_txt):
+            try:
+                blk_list.append(int(tok))
+            except Exception:
+                pass
+    except Exception:
+        blk_list = []
 
-        # Parse Pittsburgh blacklist
-        try:
-            blk_txt = (st.session_state.pgh_block_blacklist_txt or "").strip()
-            blk_list = []
-            for tok in parse_csv_list(blk_txt):
-                try:
-                    blk_list.append(int(tok))
-                except Exception:
-                    pass
-        except Exception:
-            blk_list = []
+    constraints = {
+        "gold_cap": st.session_state.gold_cap,
+        "rg_cap": st.session_state.rg_cap,
+        "vascular_cap": st.session_state.vascular_cap,
+        "service_minima": {"Gold": st.session_state.gold_min, "Red/Green": st.session_state.rg_min, "ICU": 1},
+        "exclude_from_call": st.session_state.exclude_from_call,
+        "enable_pittsburgh": True,
+        "pg3_pittsburgh": True,
+        "pgh_block_blacklist": blk_list,
+        "eligibility_calendars": {},
+        "random_seed": st.session_state.random_seed,
+    }
+    st.session_state.roster_df = roster_norm.copy()
+    base_fixed = st.session_state.get("schedule_df", None)
 
-        try:
-            elig_json = st.session_state.eligibility_calendars_json.strip()
-            eligibility_calendars = json.loads(elig_json) if elig_json else {}
-        except Exception as e:
-            st.warning(f"Eligibility calendars JSON invalid: {e}")
-            eligibility_calendars = {}
+    yearly = auto_generate_yearly(roster_norm.copy(), ay_start, constraints, base_fixed=base_fixed)
+    if st.session_state.use_optimizer:
+        yearly = polish_with_optimizer(yearly, roster_norm.copy(), ay_start, constraints, time_limit_s=st.session_state.opt_time_limit)
 
-        constraints = {
-            # Removed legacy booleans per instructions:
-            # "senior_on_gold": st.session_state.senior_on_gold,
-            # "rg_require_sji": st.session_state.rg_require_sji,
-            # "vascular_sr_jr": st.session_state.vascular_sr_jr,
-            "rg_allow_fourth": st.session_state.rg_allow_fourth,  # UI only; hard rule enforces 3–4
+    dailies = build_dailies_from_yearly(yearly, ay_start)
+    # Auto-fill vacation from Roster's Vacation 1/2/3 columns
+    if st.session_state.get("auto_vacation", True):
+        apply_vacation_from_roster(dailies, roster_norm, ay_start)
+    if st.session_state.auto_call:
+        auto_assign_weekend_call(dailies, yearly, ay_start, constraints, roster_norm)
 
-            "nightfloat": st.session_state.nightfloat,
-
-            "gold_cap": st.session_state.gold_cap,
-            "rg_cap": st.session_state.rg_cap,
-            "vascular_cap": st.session_state.vascular_cap,
-
-            "service_minima": {"Gold":st.session_state.gold_min, "Red/Green":st.session_state.rg_min, "ICU":st.session_state.icu_min},
-
-            "exclude_from_call": st.session_state.exclude_from_call,
-            "pg4_elective": True,
-
-            # Pittsburgh controls
-            "enable_pittsburgh": st.session_state.enable_pittsburgh,
-            "pg3_pittsburgh": st.session_state.pg3_pittsburgh,
-            "pgh_block_blacklist": blk_list,
-
-            "penalty_nf_gap": st.session_state.penalty_nf_gap,
-            "penalty_pgy5_last": st.session_state.penalty_pgy5_last,
-            "penalty_consecutive_repeat": st.session_state.penalty_consecutive_repeat,
-
-            "vascular_third_cap_per_resident": st.session_state.vascular_third_cap,
-
-            "eligibility_calendars": eligibility_calendars,
-
-            "random_seed": st.session_state.random_seed,
-        }
-        st.session_state.roster_df = roster_norm.copy()
-        base_fixed = st.session_state.get("schedule_df", None)
-
-        yearly = auto_generate_yearly(roster_norm.copy(), ay_start, constraints, base_fixed=base_fixed)
-        if st.session_state.use_optimizer:
-            yearly = polish_with_optimizer(yearly, roster_norm.copy(), ay_start, constraints, time_limit_s=st.session_state.opt_time_limit)
-
-        dailies = build_dailies_from_yearly(yearly, ay_start)
-        if st.session_state.auto_call:
-            auto_assign_weekend_call(dailies, yearly, ay_start, constraints, roster_norm)
-
-        st.session_state.schedule_df = yearly
-        st.session_state.dailies = dailies
-        st.session_state.constraints = constraints
-        st.session_state.schedule_df_effective = None
-        try:
-            st.toast("Generated. See tabs below.")
-        except Exception:
-            st.success("Generated. See tabs below.")
-with colB:
-    edit_mode = st.toggle("Edit mode", value=True, help="ON = tables editable; OFF = preview (weekday colors only)")
-with colC:
-    if st.button("💾 Save scenario"):
-        sc = st.session_state.get("scenarios", {})
-        sc = {} if sc is None else dict(sc)
-        name = st.session_state.scenario_name.strip() or f"Scenario {len(sc)+1}"
-        sc[name] = {
-            "schedule": st.session_state.get("schedule_df", pd.DataFrame()).copy(),
-            "dailies": st.session_state.get("dailies", {}).copy(),
-            "constraints": st.session_state.get("constraints", {}).copy(),
-            "roster": st.session_state.get("roster_df", pd.DataFrame()).copy(),
-        }
-        st.session_state.scenarios = sc
-        st.success(f"Saved: {name}")
+    st.session_state.schedule_df = yearly
+    st.session_state.dailies = dailies
+    st.session_state.constraints = constraints
+    st.session_state.schedule_df_effective = None
+    save_schedule_to_cache(dailies, yearly, roster_norm)
+    st.rerun()
+    return True
 
 # Utility: get a valid Yearly for checks/export
 def get_effective_yearly_for_checks():
@@ -1828,49 +3178,201 @@ def get_effective_yearly_for_checks():
         return effective_yearly_from_dailies(dailies, ay_start, idx_order)
     return None
 
-if "dailies" in st.session_state and "schedule_df" in st.session_state:
-    schedule_df = st.session_state.schedule_df
-    dailies     = st.session_state.dailies
-    constraints = st.session_state.constraints
-    roster_df_ss= st.session_state.get("roster_df", roster)
+# Create tabs (always visible)
+tabs = st.tabs(["Yearly (editable)","Daily Blocks (editable)","Checks","Export","Case Logs","Weekly Schedule"])
 
-    tabs = st.tabs(["Yearly (editable)","Daily Blocks (editable)","Checks","Export"])
+# Get schedule/dailies if they exist
+schedule_df = st.session_state.get("schedule_df", None)
+dailies = st.session_state.get("dailies", None)
+constraints = st.session_state.get("constraints", {})
+roster_df_ss = st.session_state.get("roster_df", st.session_state.roster_table)
+has_schedule = schedule_df is not None and not schedule_df.empty
 
-    # Yearly
-    with tabs[0]:
+# Yearly tab
+with tabs[0]:
+    # Roster section (always visible in Yearly tab)
+    with st.expander("Roster (editable)", expanded=not has_schedule):
+        roster = show_table(st.session_state.roster_table, "roster_editor", editable=True, hide_index=True, index_name_hint="Resident")
+        st.session_state.roster_table = roster.copy()
+
+        st.checkbox("Auto-assign weekend call after edits", True, key="auto_call")
+        st.checkbox("Auto-fill vacation dates from Roster columns", True, key="auto_vacation",
+                   help="Fills 'Vacation' in Daily Blocks based on Vacation 1/2/3 columns. Accepts: 'Block 3', 'B3', '7/1/2025', or date ranges like '7/1-7/5'.")
+
+        if st.button("Generate schedule from roster"):
+            generate_schedule_from_roster()
+
+    # Show schedule if it exists
+    if has_schedule:
         st.markdown("#### Yearly Schedule")
         target = st.selectbox("Jump to resident", ["(all)"] + list(schedule_df.index), index=0, key="jump_resident")
         view_df = schedule_df if target == "(all)" else schedule_df.loc[[target]]
         if edit_mode:
             yearly_edit = view_df.reset_index().rename(columns={"index":"Resident"})
-            edited = show_table(yearly_edit, "yearly_editor", editable=True, hide_index=True, index_name_hint="Resident")
-            if st.button("Apply Yearly edits → rebuild Daily / Checks / Export"):
-                new_yearly = edited.set_index("Resident") if "Resident" in edited.columns else edited.copy()
-                if target != "(all)":
-                    full = schedule_df.copy()
-                    full.loc[new_yearly.index, :] = new_yearly.values
-                    new_yearly = full
-                st.session_state.schedule_df = new_yearly
-                new_dailies = build_dailies_from_yearly(new_yearly, ay_start)
-                if st.session_state.auto_call:
-                    auto_assign_weekend_call(new_dailies, new_yearly, ay_start, constraints, roster_df_ss)
-                st.session_state.dailies = new_dailies
-                st.session_state.schedule_df_effective = None
-                st.success("Applied Yearly edits.")
+            # Get all block columns (everything except "Resident") for dropdown menus
+            block_columns = [c for c in yearly_edit.columns if c != "Resident"]
+            edited = show_table(yearly_edit, "yearly_editor", editable=True, hide_index=True,
+                              index_name_hint="Resident", dropdown_columns=block_columns,
+                              dropdown_options=ROTATION_OPTIONS)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Apply Yearly edits → rebuild Daily / Checks / Export"):
+                    new_yearly = edited.set_index("Resident") if "Resident" in edited.columns else edited.copy()
+                    if target != "(all)":
+                        full = schedule_df.copy()
+                        full.loc[new_yearly.index, :] = new_yearly.values
+                        new_yearly = full
+                    st.session_state.schedule_df = new_yearly
+                    new_dailies = build_dailies_from_yearly(new_yearly, ay_start)
+                    # Auto-fill vacation from Roster's Vacation 1/2/3 columns
+                    if st.session_state.get("auto_vacation", True):
+                        apply_vacation_from_roster(new_dailies, roster_df_ss, ay_start)
+                    if st.session_state.auto_call:
+                        auto_assign_weekend_call(new_dailies, new_yearly, ay_start, constraints, roster_df_ss)
+                    st.session_state.dailies = new_dailies
+                    st.session_state.schedule_df_effective = None
+                    save_schedule_to_cache(new_dailies, new_yearly, roster_df_ss)
+                    st.success("Applied Yearly edits.")
+                    st.rerun()
+            with col2:
+                if st.button("Re-balance schedule (keep Pittsburgh/Elective, adjust others)"):
+                    new_yearly = edited.set_index("Resident") if "Resident" in edited.columns else edited.copy()
+                    if target != "(all)":
+                        full = schedule_df.copy()
+                        full.loc[new_yearly.index, :] = new_yearly.values
+                        new_yearly = full
+
+                    # Create base_fixed with only Pittsburgh, Elective, and Vacation (manually entered rotations to keep)
+                    # Clear other cells so the scheduler can re-balance them
+                    base_fixed = new_yearly.copy()
+                    keep_rotations = {"Pittsburgh", "Elective", "Vacation"}
+                    for col in base_fixed.columns:
+                        for idx in base_fixed.index:
+                            val = str(base_fixed.loc[idx, col]).strip()
+                            if val not in keep_rotations:
+                                base_fixed.loc[idx, col] = ""
+
+                    # Re-run scheduler with base_fixed to fill in other rotations fairly
+                    rebalanced = auto_generate_yearly(roster_df_ss.copy(), ay_start, constraints, base_fixed=base_fixed)
+                    new_dailies = build_dailies_from_yearly(rebalanced, ay_start)
+                    # Auto-fill vacation from Roster's Vacation 1/2/3 columns
+                    if st.session_state.get("auto_vacation", True):
+                        apply_vacation_from_roster(new_dailies, roster_df_ss, ay_start)
+                    if st.session_state.auto_call:
+                        auto_assign_weekend_call(new_dailies, rebalanced, ay_start, constraints, roster_df_ss)
+
+                    st.session_state.schedule_df = rebalanced
+                    st.session_state.dailies = new_dailies
+                    st.session_state.schedule_df_effective = None
+                    save_schedule_to_cache(new_dailies, rebalanced, roster_df_ss)
+                    st.success("Re-balanced schedule (kept Pittsburgh/Elective/Vacation, adjusted others).")
+                    st.rerun()
         else:
             vis = view_df.reset_index().rename(columns={"index":"Resident"})
             cols = vis.columns[1:]
             st.dataframe(vis.style.applymap(style_each_cell, subset=cols),
                          use_container_width=True, hide_index=True)
+    else:
+        st.info("No schedule yet. Edit the roster above and click 'Generate schedule from roster' to create one.")
 
-    # Daily
-    with tabs[1]:
+    # Version Comparison Section
+    if st.session_state.get("schedule_snapshots"):
+        with st.expander("📊 Compare Versions", expanded=False):
+            snapshot_names = list(st.session_state.schedule_snapshots.keys())
+
+            if len(snapshot_names) >= 1:
+                col1, col2 = st.columns(2)
+                with col1:
+                    compare_left = st.selectbox("Version A:", ["(Current)"] + snapshot_names, key="compare_left")
+                with col2:
+                    compare_right = st.selectbox("Version B:", ["(Current)"] + snapshot_names, index=min(1, len(snapshot_names)), key="compare_right")
+
+                # Get the two schedules to compare
+                def get_schedule_for_compare(choice):
+                    if choice == "(Current)":
+                        return st.session_state.get("sched_df", pd.DataFrame())
+                    else:
+                        snap = st.session_state.schedule_snapshots.get(choice, {})
+                        return snap.get("schedule_df", pd.DataFrame())
+
+                left_df = get_schedule_for_compare(compare_left)
+                right_df = get_schedule_for_compare(compare_right)
+
+                if not left_df.empty and not right_df.empty:
+                    st.markdown(f"**Differences between {compare_left} and {compare_right}:**")
+
+                    # Find differences
+                    differences = []
+                    common_residents = set(left_df.index) & set(right_df.index)
+                    common_blocks = [c for c in left_df.columns if c in right_df.columns]
+
+                    for resident in sorted(common_residents):
+                        for block in common_blocks:
+                            left_val = str(left_df.loc[resident, block]) if resident in left_df.index else ""
+                            right_val = str(right_df.loc[resident, block]) if resident in right_df.index else ""
+                            if left_val != right_val:
+                                differences.append({
+                                    "Resident": resident,
+                                    "Block": block,
+                                    compare_left: left_val,
+                                    compare_right: right_val
+                                })
+
+                    if differences:
+                        diff_df = pd.DataFrame(differences)
+                        st.dataframe(diff_df, use_container_width=True, hide_index=True)
+                        st.caption(f"{len(differences)} difference(s) found")
+                    else:
+                        st.success("No differences found - schedules are identical!")
+
+                    # Summary stats comparison
+                    st.markdown("**Summary Comparison:**")
+                    def count_rotations(df):
+                        counts = {}
+                        for col in df.columns:
+                            for val in df[col].dropna():
+                                val_str = str(val).strip()
+                                if val_str:
+                                    counts[val_str] = counts.get(val_str, 0) + 1
+                        return counts
+
+                    left_counts = count_rotations(left_df)
+                    right_counts = count_rotations(right_df)
+                    all_rotations = sorted(set(left_counts.keys()) | set(right_counts.keys()))
+
+                    summary_data = []
+                    for rot in all_rotations:
+                        left_c = left_counts.get(rot, 0)
+                        right_c = right_counts.get(rot, 0)
+                        diff = right_c - left_c
+                        diff_str = f"+{diff}" if diff > 0 else str(diff) if diff < 0 else "="
+                        summary_data.append({
+                            "Rotation": rot,
+                            compare_left: left_c,
+                            compare_right: right_c,
+                            "Diff": diff_str
+                        })
+
+                    summary_df = pd.DataFrame(summary_data)
+                    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Select two versions with schedule data to compare")
+            else:
+                st.info("Save at least one version to compare (use sidebar)")
+
+# Daily tab
+with tabs[1]:
+    if dailies:
         st.markdown("#### Daily block tabs (Weekends uncolored; Sa / F/Su text only)")
         new_dailies={}
         for name,df in dailies.items():
             st.markdown(f"**{name}**")
             if edit_mode:
-                edited = show_table(df, f"edit_{name}", editable=True, daily=True, index_name_hint="Resident")
+                # Get all columns for dropdown menus (all daily columns)
+                daily_columns = list(df.columns)
+                edited = show_table(df, f"edit_{name}", editable=True, daily=True, index_name_hint="Resident",
+                                   dropdown_columns=daily_columns, dropdown_options=DAILY_OPTIONS)
                 new_dailies[name]=edited.copy()
             else:
                 weekday_cols=[c for c in df.columns if c[0] in ["Monday","Tuesday","Wednesday","Thursday","Friday"]]
@@ -1880,58 +3382,861 @@ if "dailies" in st.session_state and "schedule_df" in st.session_state:
             st.session_state.dailies = new_dailies
             eff_yearly = effective_yearly_from_dailies(new_dailies, ay_start, list(schedule_df.index))
             st.session_state.schedule_df_effective = eff_yearly
+            save_schedule_to_cache(new_dailies, eff_yearly, roster_df_ss)
             st.success("Applied Daily edits and derived effective Yearly.")
+    else:
+        st.info("No schedule available yet. Generate a schedule in the Yearly tab first.")
 
-    # Checks
-    with tabs[2]:
-        st.markdown("#### Checks & Balance Tables")
-        base_yearly = st.session_state.get("schedule_df_effective", None) or get_effective_yearly_for_checks()
-        if base_yearly is None or base_yearly.empty:
-            st.info("No schedule available yet. Generate a schedule first.")
+# Checks tab
+with tabs[2]:
+    st.markdown("#### Checks & Balance Tables")
+    base_yearly = st.session_state.get("schedule_df_effective", None) or get_effective_yearly_for_checks()
+    if base_yearly is None or base_yearly.empty:
+        st.info("No schedule available yet. Generate a schedule first.")
+    else:
+        checks = compute_checks(base_yearly, st.session_state.get("dailies", {}), roster_df_ss, constraints, ay_start)
+        c1,c2,c3 = st.columns([1.1,1.25,1.25])
+        with c1:
+            st.markdown("**Summary (Severity × Code)**")
+            st.dataframe(checks["summary"], use_container_width=True, hide_index=True)
+        with c2:
+            st.markdown("**Per-block coverage**")
+            st.dataframe(checks["coverage"], use_container_width=True, hide_index=True)
+        with c3:
+            st.markdown("**Call-load by resident**")
+            st.dataframe(checks["call"], use_container_width=True, hide_index=True)
+
+        # Compliance checks (4 days off, vacation weeks, personal days)
+        st.markdown("**Compliance Checks (Days Off / Vacation / Personal Days)**")
+        if "compliance" in checks and not checks["compliance"].empty:
+            st.dataframe(checks["compliance"], use_container_width=True, hide_index=True)
         else:
-            checks = compute_checks(base_yearly, st.session_state.dailies, roster_df_ss, constraints, ay_start)
-            c1,c2,c3 = st.columns([1.1,1.25,1.25])
-            with c1:
-                st.markdown("**Summary (Severity × Code)**")
-                st.dataframe(checks["summary"], use_container_width=True, hide_index=True)
-            with c2:
-                st.markdown("**Per-block coverage**")
-                st.dataframe(checks["coverage"], use_container_width=True, hide_index=True)
-            with c3:
-                st.markdown("**Call-load by resident**")
-                st.dataframe(checks["call"], use_container_width=True, hide_index=True)
+            st.info("No compliance data available.")
 
-            st.markdown("**Issues (detailed)**"); st.dataframe(checks["issues"], use_container_width=True, hide_index=True)
-            st.markdown("**Per-resident rotation counts (PGY-sorted)**"); st.dataframe(checks["rot_counts"], use_container_width=True, hide_index=True)
-            st.markdown("**Per-PGY coverage per block**"); st.dataframe(checks["pgy_coverage"], use_container_width=True, hide_index=True)
-            st.markdown("**Special blocks per resident**"); st.dataframe(checks["special_counts"], use_container_width=True, hide_index=True)
-            st.markdown("**Service totals across the year**"); st.dataframe(checks["svc_variance"], use_container_width=True, hide_index=True)
-            if "reasons" in checks and not checks["reasons"].empty:
-                st.markdown("**Why these assignments?**"); st.dataframe(checks["reasons"], use_container_width=True, hide_index=True)
-            if "call_overrides" in checks:
-                st.markdown("**Weekend call overrides (forced for coverage)**")
-                st.dataframe(checks["call_overrides"], use_container_width=True, hide_index=True)
-            if "nf_overrides" in checks:
-                st.markdown("**Night Float overrides & warnings**")
-                st.dataframe(checks["nf_overrides"], use_container_width=True, hide_index=True)
+        st.markdown("**Issues (detailed)**"); st.dataframe(checks["issues"], use_container_width=True, hide_index=True)
+        st.markdown("**Per-resident rotation counts (PGY-sorted)**"); st.dataframe(checks["rot_counts"], use_container_width=True, hide_index=True)
+        st.markdown("**Per-PGY coverage per block**"); st.dataframe(checks["pgy_coverage"], use_container_width=True, hide_index=True)
+        st.markdown("**Special blocks per resident**"); st.dataframe(checks["special_counts"], use_container_width=True, hide_index=True)
+        st.markdown("**Service totals across the year**"); st.dataframe(checks["svc_variance"], use_container_width=True, hide_index=True)
+        if "reasons" in checks and not checks["reasons"].empty:
+            st.markdown("**Why these assignments?**"); st.dataframe(checks["reasons"], use_container_width=True, hide_index=True)
+        if "call_overrides" in checks:
+            st.markdown("**Weekend call overrides (forced for coverage)**")
+            st.dataframe(checks["call_overrides"], use_container_width=True, hide_index=True)
+        if "nf_overrides" in checks:
+            st.markdown("**Night Float overrides & warnings**")
+            st.dataframe(checks["nf_overrides"], use_container_width=True, hide_index=True)
 
-    # Export
-    with tabs[3]:
-        base_yearly = st.session_state.get("schedule_df_effective", None) or get_effective_yearly_for_checks()
-        if base_yearly is None or base_yearly.empty:
-            st.info("No schedule available to export yet.")
-        else:
-            lint = lint_amion(st.session_state.dailies)
-            if not lint.empty:
-                st.markdown("**Amion CSV Lint**"); st.dataframe(lint, use_container_width=True, hide_index=True)
+        # Fairness Charts
+        st.markdown("---")
+        st.markdown("#### Fairness Charts")
+        st.caption("All charts sorted by PGY level (PGY-5 first, then PGY-4, PGY-3, PGY-2, PGY-1).")
 
-            checks_now = compute_checks(base_yearly, st.session_state.dailies, roster_df_ss, constraints, ay_start)
-            xlsx_bytes = to_excel(base_yearly, st.session_state.dailies, checks_now)
+        # PGY sort order for all charts
+        pgy_order = {"PGY-5": 0, "PGY-4": 1, "PGY-3": 2, "PGY-2": 3, "PGY-1": 4}
+
+        # Helper to get sorted resident order
+        def get_resident_order(df):
+            df = df.copy()
+            df["_pgy_ord"] = df["PGY"].map(pgy_order)
+            df_sorted = df.sort_values(["_pgy_ord", "Resident"])
+            return df_sorted["Resident"].tolist()
+
+        # Weekend Call Load Chart (by type)
+        st.markdown("**Weekend Call Load by Resident (F/Su vs Sa)**")
+        call_data = checks["call"].copy()
+        resident_order = get_resident_order(call_data)
+        call_melted = call_data.melt(id_vars=["Resident", "PGY"], value_vars=["F/Su", "Sa"], var_name="Call Type", value_name="Count")
+        call_chart = alt.Chart(call_melted).mark_bar().encode(
+            x=alt.X("Resident:N", sort=resident_order, title="Resident"),
+            y=alt.Y("Count:Q", title="Count"),
+            color=alt.Color("Call Type:N"),
+            xOffset="Call Type:N"
+        ).properties(height=300)
+        st.altair_chart(call_chart, use_container_width=True)
+
+        # Weekend Call Load Total Chart
+        st.markdown("**Weekend Call Load Total by Resident**")
+        call_total_chart = alt.Chart(call_data).mark_bar().encode(
+            x=alt.X("Resident:N", sort=resident_order, title="Resident"),
+            y=alt.Y("Total:Q", title="Total Calls")
+        ).properties(height=250)
+        st.altair_chart(call_total_chart, use_container_width=True)
+
+        # Special Blocks Chart
+        st.markdown("**Special Blocks by Resident**")
+        special_data = checks["special_counts"].copy()
+        resident_order = get_resident_order(special_data)
+        special_melted = special_data.melt(id_vars=["Resident", "PGY"], value_vars=["Night Float blocks", "Pittsburgh blocks", "Elective blocks"], var_name="Block Type", value_name="Count")
+        special_chart = alt.Chart(special_melted).mark_bar().encode(
+            x=alt.X("Resident:N", sort=resident_order, title="Resident"),
+            y=alt.Y("Count:Q", title="Count"),
+            color=alt.Color("Block Type:N"),
+            xOffset="Block Type:N"
+        ).properties(height=300)
+        st.altair_chart(special_chart, use_container_width=True)
+
+        # Rotation Distribution Chart
+        st.markdown("**Rotation Distribution by Resident (All Rotations)**")
+        rot_data = checks["rot_counts"].copy()
+        rot_cols = [c for c in rot_data.columns if c not in ["Resident", "PGY"]]
+        resident_order = get_resident_order(rot_data)
+        rot_melted = rot_data.melt(id_vars=["Resident", "PGY"], value_vars=rot_cols, var_name="Rotation", value_name="Count")
+        rot_chart = alt.Chart(rot_melted).mark_bar().encode(
+            x=alt.X("Resident:N", sort=resident_order, title="Resident"),
+            y=alt.Y("Count:Q", title="Count"),
+            color=alt.Color("Rotation:N"),
+            xOffset="Rotation:N"
+        ).properties(height=400)
+        st.altair_chart(rot_chart, use_container_width=True)
+
+        # Individual Rotation Charts
+        st.markdown("---")
+        st.markdown("#### Individual Rotation Comparisons")
+        st.caption("Each chart shows how many blocks each resident has for that rotation (sorted by PGY).")
+
+        # Create individual bar chart for each rotation (sorted by PGY)
+        for rotation in rot_cols:
+            st.markdown(f"**{rotation}**")
+            single_chart = alt.Chart(rot_data).mark_bar().encode(
+                x=alt.X("Resident:N", sort=resident_order, title="Resident"),
+                y=alt.Y(f"{rotation}:Q", title="Blocks")
+            ).properties(height=250)
+            st.altair_chart(single_chart, use_container_width=True)
+
+# Export tab
+with tabs[3]:
+    base_yearly = st.session_state.get("schedule_df_effective", None) or get_effective_yearly_for_checks()
+    if base_yearly is None or base_yearly.empty:
+        st.info("No schedule available to export yet.")
+    else:
+        lint = lint_amion(st.session_state.get("dailies", {}))
+        if not lint.empty:
+            st.markdown("**Amion CSV Lint**"); st.dataframe(lint, use_container_width=True, hide_index=True)
+
+        checks_now = compute_checks(base_yearly, st.session_state.get("dailies", {}), roster_df_ss, constraints, ay_start)
+
+        # Spreadsheet exports
+        st.markdown("#### Spreadsheet Exports")
+        col_xlsx, col_csv = st.columns(2)
+        with col_xlsx:
+            xlsx_bytes = to_excel(base_yearly, st.session_state.get("dailies", {}), checks_now)
             st.download_button("⬇️ Download Excel (.xlsx)", data=xlsx_bytes,
                                file_name="ResidentSchedule_26-27_Editable.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            csv_bytes = to_amion_csv(st.session_state.dailies)
+        with col_csv:
+            csv_bytes = to_amion_csv(st.session_state.get("dailies", {}))
             st.download_button("⬇️ Download Amion-style CSV (.csv)", data=csv_bytes,
                                file_name="ResidentSchedule_26-27_Amion.csv", mime="text/csv")
-else:
-    st.info("Edit the roster and click **Generate schedule from roster** to begin.")
+
+        # Calendar Subscriptions Section
+        st.markdown("---")
+        st.markdown("#### 📅 Calendar Subscriptions (Auto-Updating)")
+        st.caption("Residents subscribe to a URL - their calendars update automatically when you change the schedule.")
+
+        export_dailies = st.session_state.get("dailies", {})
+        if export_dailies:
+            # Get list of residents
+            export_residents = set()
+            for df in export_dailies.values():
+                export_residents.update(df.index)
+            export_residents = sorted([r for r in export_residents if isinstance(r, str) and r.strip() and r.lower() != "none"])
+
+            st.markdown("**Subscription URLs for each resident:**")
+
+            # Generate subscription URLs table
+            sub_data = []
+            for resident in export_residents:
+                safe_name = re.sub(r'[^\w\s-]', '', resident).strip().replace(' ', '_')
+                sub_url = f"/Calendar_Feed?resident={safe_name}"
+                sub_data.append({"Resident": resident, "Subscription URL": sub_url})
+
+            sub_df = pd.DataFrame(sub_data)
+            st.dataframe(sub_df, use_container_width=True, hide_index=True)
+
+            st.page_link("pages/1_📅_Calendar_Feed.py", label="📅 Open Calendar Feed Page", icon="🔗")
+
+            with st.expander("How residents subscribe to calendar updates"):
+                st.markdown("""
+**For Residents - How to Subscribe:**
+
+1. **Get your URL** from the table above (ask your admin for the full app URL)
+2. **Full URL format:** `https://your-app.streamlit.app/Calendar_Feed?resident=Your_Name`
+
+**Google Calendar:**
+1. Open [calendar.google.com](https://calendar.google.com)
+2. Click **+** next to "Other calendars" → **From URL**
+3. Paste your subscription URL
+4. Click **Add calendar**
+5. ✅ Your calendar will auto-update every 12-24 hours
+
+**Microsoft Outlook:**
+1. Go to Calendar → **Add calendar** → **Subscribe from web**
+2. Paste your subscription URL
+3. Click **Import**
+
+**Apple Calendar:**
+1. File → **New Calendar Subscription**
+2. Paste your subscription URL
+3. Set refresh frequency (Auto, Every day, etc.)
+4. Click **Subscribe**
+
+**Note:** Updates aren't instant - calendar apps refresh every few hours to few days depending on the app.
+                """)
+
+# Case Logs tab
+with tabs[4]:
+    st.markdown("## 📊 ACGME Case Logs Dashboard")
+    st.caption("Upload ACGME case log exports (PDF or Excel) to track resident progress.")
+
+    # Initialize case log storage from cache
+    # case_logs stores summary data: {resident: {category: {"total": N, "minimum": M, "subcategories": {...}}}}
+    if "case_logs" not in st.session_state:
+        st.session_state.case_logs = load_case_logs_from_cache()
+
+    def is_summary_format(df):
+        """Check if the DataFrame is an ACGME summary report (categories with totals)."""
+        if df is None or df.empty:
+            return False
+        cols_lower = [str(c).lower() for c in df.columns]
+        # Summary format typically has: Category, Minimum, and resident name columns
+        has_category = any('category' in c or 'defined' in c for c in cols_lower)
+        has_minimum = any('minimum' in c or 'min' in c for c in cols_lower)
+        # Check if first column looks like category names (not dates or CPT codes)
+        first_col_vals = df.iloc[:, 0].dropna().astype(str).head(5)
+        has_text_categories = any(len(v) > 5 and not v.replace('.', '').isdigit() for v in first_col_vals)
+        return (has_category or has_minimum) and has_text_categories
+
+    def import_summary_file(df, filename):
+        """Import an ACGME summary report file."""
+        parsed = parse_acgme_summary_report(df)
+        imported_residents = []
+        for resident, categories in parsed.items():
+            if resident and categories:
+                # Clean resident name
+                res_name = str(resident).strip()
+                if res_name.lower() not in ['minimum', 'min', 'category', 'nan', '']:
+                    st.session_state.case_logs[res_name] = categories
+                    imported_residents.append(res_name)
+        return imported_residents
+
+    def process_imported_files(new_imports, source_name):
+        """Process imported files from any source."""
+        total_imported = 0
+        for filename, df in new_imports:
+            if is_summary_format(df):
+                imported = import_summary_file(df, filename)
+                if imported:
+                    st.toast(f"📥 {source_name}: Imported {', '.join(imported)}")
+                    total_imported += len(imported)
+            else:
+                # Try to parse anyway
+                df.columns = df.columns.str.strip()
+                resident_col = None
+                for c in df.columns:
+                    if any(x in c.lower() for x in ['resident', 'name', 'trainee', 'fellow']):
+                        resident_col = c
+                        break
+                if resident_col is None and len(df.columns) > 0:
+                    resident_col = df.columns[0]
+                if resident_col:
+                    for resident in df[resident_col].unique():
+                        if pd.isna(resident) or str(resident).strip() == "":
+                            continue
+                        res_name = str(resident).strip()
+                        resident_df = df[df[resident_col] == resident].copy()
+                        if res_name not in st.session_state.case_logs:
+                            st.session_state.case_logs[res_name] = resident_df
+                        total_imported += 1
+        return total_imported
+
+    # File upload section
+    with st.expander("📤 Upload Case Logs", expanded=True):
+        st.markdown("""
+**How to export from ACGME:**
+1. Log into [ACGME ADS](https://apps.acgme.org/connect/login)
+2. Go to **Case Logs** → **Reports** → **Resident Minimum Defined Categories**
+3. Select resident(s) and export to **PDF** or Excel
+4. Upload below
+
+Supports PDF and Excel formats.
+        """)
+
+        uploaded_file = st.file_uploader(
+            "Upload ACGME Case Log Export (PDF/Excel/CSV)",
+            type=["pdf", "xlsx", "xls", "csv"],
+            key="case_log_upload"
+        )
+
+        # Debug mode checkbox
+        show_pdf_debug = st.checkbox("Show PDF diagnostic info", value=False, key="pdf_debug_mode")
+
+        if uploaded_file:
+            try:
+                df = None
+                if uploaded_file.name.lower().endswith('.pdf'):
+                    if HAS_PDFPLUMBER:
+                        file_buffer = io.BytesIO(uploaded_file.read())
+
+                        # Show diagnostic info if requested
+                        if show_pdf_debug:
+                            file_buffer.seek(0)
+                            st.markdown("### PDF Diagnostic Info")
+                            with pdfplumber.open(file_buffer) as pdf:
+                                st.write(f"**Pages:** {len(pdf.pages)}")
+                                for i, page in enumerate(pdf.pages):
+                                    st.markdown(f"#### Page {i+1}")
+
+                                    # Show extracted text
+                                    text = page.extract_text()
+                                    if text:
+                                        st.markdown("**Extracted Text (first 2000 chars):**")
+                                        st.code(text[:2000])
+                                    else:
+                                        st.warning("No text extracted from this page")
+
+                                    # Show extracted tables
+                                    tables = page.extract_tables()
+                                    if tables:
+                                        st.markdown(f"**Tables found:** {len(tables)}")
+                                        for j, table in enumerate(tables):
+                                            st.markdown(f"Table {j+1} ({len(table)} rows):")
+                                            if table:
+                                                # Show first 10 rows
+                                                preview = table[:10]
+                                                st.dataframe(pd.DataFrame(preview), use_container_width=True)
+                                    else:
+                                        st.warning("No tables extracted from this page")
+
+                            st.markdown("---")
+                            st.markdown("**Copy the text above and share it so I can fix the parser.**")
+                            file_buffer.seek(0)
+
+                        df = parse_acgme_pdf(file_buffer, debug=show_pdf_debug)
+                        if df is None or df.empty:
+                            if not show_pdf_debug:
+                                st.error("Could not extract data from PDF.")
+                                st.info("**Enable 'Show PDF diagnostic info' above** so we can see what's in the PDF and fix the parser.")
+                    else:
+                        st.error("PDF support not available. Please upload Excel format.")
+                elif uploaded_file.name.endswith('.csv'):
+                    df = pd.read_csv(uploaded_file)
+                else:
+                    df = pd.read_excel(uploaded_file)
+
+                if df is not None and not df.empty:
+                    st.success(f"✅ Loaded file with {len(df)} rows")
+
+                    # Check if it's summary format
+                    if is_summary_format(df):
+                        st.info("📊 Detected ACGME summary format (category totals)")
+
+                        # Show preview
+                        st.markdown("**Preview:**")
+                        st.dataframe(df.head(10), use_container_width=True)
+
+                        if st.button("Import Summary Data"):
+                            imported = import_summary_file(df, uploaded_file.name)
+                            if imported:
+                                save_case_logs_to_cache(st.session_state.case_logs)
+                                st.success(f"✅ Imported data for: {', '.join(imported)}")
+                                st.rerun()
+                            else:
+                                st.error("Could not parse resident data from file. Check the format.")
+                    else:
+                        # Individual case format - need column mapping
+                        st.info("📋 Detected individual case format")
+                        df.columns = df.columns.str.strip()
+                        possible_resident_cols = [c for c in df.columns if any(x in c.lower() for x in ['resident', 'name', 'trainee'])]
+                        possible_cpt_cols = [c for c in df.columns if any(x in c.lower() for x in ['cpt', 'code', 'procedure'])]
+
+                        resident_col = st.selectbox("Select Resident column:", options=df.columns.tolist(),
+                                                   index=df.columns.tolist().index(possible_resident_cols[0]) if possible_resident_cols else 0)
+                        cpt_col = st.selectbox("Select CPT Code column:", options=df.columns.tolist(),
+                                               index=df.columns.tolist().index(possible_cpt_cols[0]) if possible_cpt_cols else 0)
+                        role_col = st.selectbox("Select Role column (optional):", options=["(None)"] + df.columns.tolist())
+
+                        if st.button("Import Cases"):
+                            for resident in df[resident_col].unique():
+                                if pd.isna(resident) or str(resident).strip() == "":
+                                    continue
+                                resident_df = df[df[resident_col] == resident].copy()
+                                if resident not in st.session_state.case_logs:
+                                    st.session_state.case_logs[resident] = resident_df
+                                else:
+                                    if isinstance(st.session_state.case_logs[resident], pd.DataFrame):
+                                        st.session_state.case_logs[resident] = pd.concat(
+                                            [st.session_state.case_logs[resident], resident_df]
+                                        ).drop_duplicates()
+                            save_case_logs_to_cache(st.session_state.case_logs)
+                            st.success(f"✅ Imported cases for {len(df[resident_col].unique())} residents")
+                            st.rerun()
+
+            except Exception as e:
+                st.error(f"Error reading file: {e}")
+
+    # Dashboard display
+    if st.session_state.case_logs:
+        st.markdown("---")
+        st.markdown("### 📈 Case Log Progress by Resident")
+
+        # Resident selector
+        all_residents = sorted(st.session_state.case_logs.keys())
+        selected_resident = st.selectbox("Select Resident:", options=["(All Residents)"] + all_residents,
+                                         key="case_log_resident_view")
+
+        def render_progress_bar(current, minimum, label):
+            """Render a progress bar with color coding."""
+            if minimum == 0:
+                pct = 100 if current > 0 else 0
+            else:
+                pct = min(100, (current / minimum) * 100)
+
+            color = "#28a745" if pct >= 100 else "#ffc107" if pct >= 50 else "#dc3545"
+
+            st.markdown(f"""
+            <div style="margin-bottom: 8px;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                    <span>{label}</span>
+                    <span><b>{current}</b> / {minimum}</span>
+                </div>
+                <div style="background-color: #e0e0e0; border-radius: 4px; height: 20px;">
+                    <div style="background-color: {color}; width: {pct}%; height: 100%; border-radius: 4px;"></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        def get_resident_progress(res_data):
+            """Get progress data from either summary dict or DataFrame."""
+            if isinstance(res_data, dict):
+                # Summary format: {category: {"total": N, "minimum": M, "subcategories": {...}}}
+                return res_data
+            elif isinstance(res_data, pd.DataFrame):
+                # Individual cases format - count by CPT codes
+                counts = {cat: {"total": 0, "minimum": ACGME_CATEGORIES[cat]["minimum"], "subcategories": {}} for cat in ACGME_CATEGORIES}
+                cpt_col = None
+                for c in res_data.columns:
+                    if 'cpt' in c.lower() or 'code' in c.lower():
+                        cpt_col = c
+                        break
+                if cpt_col:
+                    for _, row in res_data.iterrows():
+                        cpt = str(row.get(cpt_col, "")).strip()
+                        if cpt in CPT_TO_CATEGORY:
+                            cat, subcat = CPT_TO_CATEGORY[cpt]
+                            if cat in counts:
+                                counts[cat]["total"] += 1
+                return counts
+            return {}
+
+        if selected_resident == "(All Residents)":
+            # Summary view for all residents
+            summary_data = []
+            for res in all_residents:
+                res_data = st.session_state.case_logs[res]
+                progress = get_resident_progress(res_data)
+                total_counted = sum(cat_data.get("total", 0) for cat_data in progress.values())
+
+                # Get PGY level from roster
+                roster_match = st.session_state.roster_table[
+                    st.session_state.roster_table["Resident"].str.strip() == res.strip()
+                ]
+                pgy = roster_match["PGY"].iloc[0] if not roster_match.empty else "?"
+
+                # Calculate completion percentage
+                pct = (total_counted / ACGME_TOTAL_MINIMUM * 100) if ACGME_TOTAL_MINIMUM > 0 else 0
+
+                summary_data.append({
+                    "Resident": res,
+                    "PGY": pgy,
+                    "Total Cases": total_counted,
+                    "Progress": f"{total_counted}/{ACGME_TOTAL_MINIMUM} ({pct:.0f}%)"
+                })
+
+            summary_df = pd.DataFrame(summary_data)
+            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+            # Bar chart of total cases by resident
+            if summary_data:
+                chart_df = pd.DataFrame(summary_data)
+                chart = alt.Chart(chart_df).mark_bar().encode(
+                    x=alt.X("Resident:N", sort="-y"),
+                    y=alt.Y("Total Cases:Q"),
+                    color=alt.Color("PGY:N")
+                ).properties(height=300, title="Total Cases by Resident")
+                st.altair_chart(chart, use_container_width=True)
+
+        else:
+            # Individual resident view
+            res_data = st.session_state.case_logs[selected_resident]
+            progress = get_resident_progress(res_data)
+
+            st.markdown(f"### {selected_resident}")
+
+            # Total progress
+            total_counted = sum(cat_data.get("total", 0) for cat_data in progress.values())
+            st.markdown("#### Overall Progress")
+            render_progress_bar(total_counted, ACGME_TOTAL_MINIMUM, "Total Major Cases")
+
+            # Category breakdown
+            st.markdown("#### Progress by Category")
+
+            for cat, cat_info in ACGME_CATEGORIES.items():
+                minimum = cat_info["minimum"]
+                # Get current from progress data (either from summary or calculated)
+                cat_progress = progress.get(cat, {})
+                current = cat_progress.get("total", 0)
+                # Use minimum from import if available, otherwise from ACGME_CATEGORIES
+                minimum_display = cat_progress.get("minimum", minimum)
+
+                with st.expander(f"{cat} ({current}/{minimum_display})", expanded=(current < minimum_display)):
+                    render_progress_bar(current, minimum_display, cat)
+
+                    # Subcategories from either source
+                    subcats = cat_progress.get("subcategories", {})
+                    expected_subcats = cat_info.get("subcategories", {})
+
+                    # Show subcategories from progress data
+                    for subcat, sub_data in subcats.items():
+                        if isinstance(sub_data, dict):
+                            sub_cur = sub_data.get("count", 0)
+                            sub_min = sub_data.get("minimum", expected_subcats.get(subcat, {}).get("minimum", 0))
+                        else:
+                            sub_cur = sub_data
+                            sub_min = expected_subcats.get(subcat, {}).get("minimum", 0)
+                        if sub_min > 0 or sub_cur > 0:
+                            render_progress_bar(sub_cur, sub_min, f"  └─ {subcat}")
+
+            # Clear data button
+            if st.button(f"🗑️ Clear data for {selected_resident}", key="clear_resident_data"):
+                del st.session_state.case_logs[selected_resident]
+                save_case_logs_to_cache(st.session_state.case_logs)
+                st.success(f"Cleared data for {selected_resident}")
+                st.rerun()
+
+    else:
+        st.info("No case log data loaded. Drop an ACGME summary export (ResMinimumDefCat) into the watch folder.")
+
+# Weekly Schedule tab
+with tabs[5]:
+    st.markdown("## 🗓️ Weekly OR & Clinic Schedule")
+    st.caption("Manage the weekly surgery schedule and auto-assign residents to cases.")
+
+    # Initialize weekly schedule storage
+    if "weekly_schedule" not in st.session_state:
+        st.session_state.weekly_schedule = []  # List of case dicts
+
+    # Date selector
+    col_date1, col_date2 = st.columns(2)
+    with col_date1:
+        schedule_week_start = st.date_input("Week starting:", value=date.today() - timedelta(days=date.today().weekday()),
+                                            key="schedule_week_start")
+
+    st.markdown("---")
+
+    # Add case section
+    with st.expander("➕ Add Surgery / Clinic", expanded=True):
+        add_cols = st.columns([1, 1, 1, 2, 1])
+
+        with add_cols[0]:
+            case_date = st.date_input("Date:", value=schedule_week_start, key="new_case_date")
+        with add_cols[1]:
+            case_time = st.time_input("Time:", value=None, key="new_case_time")
+        with add_cols[2]:
+            case_type = st.selectbox("Type:", ["OR Case", "Clinic"], key="new_case_type")
+
+        # Attending selection grouped by team
+        all_attending_names = list(ALL_ATTENDINGS.keys())
+        with add_cols[3]:
+            case_attending = st.selectbox("Attending:", options=all_attending_names, key="new_case_attending")
+
+        with add_cols[4]:
+            attending_team = ALL_ATTENDINGS.get(case_attending, "Other")
+            st.text_input("Team:", value=attending_team, disabled=True, key="new_case_team_display")
+
+        # Case details
+        detail_cols = st.columns([2, 1, 2])
+        with detail_cols[0]:
+            case_procedure = st.text_input("Procedure/Description:", key="new_case_procedure")
+        with detail_cols[1]:
+            case_cpt = st.text_input("CPT Code (optional):", key="new_case_cpt")
+        with detail_cols[2]:
+            case_location = st.text_input("Location/Room:", key="new_case_location")
+
+        # Resident assignment
+        st.markdown("**Resident Assignment:**")
+        assign_cols = st.columns([1, 2, 2])
+
+        # Get residents on the relevant team this block
+        def get_residents_on_team(team_name):
+            """Get residents currently assigned to a team based on yearly schedule."""
+            residents = []
+            schedule_df = st.session_state.get("schedule_df", None)
+            if schedule_df is None:
+                return list(st.session_state.roster_table["Resident"].dropna().unique())
+
+            # Find current block
+            blocks = build_blocks(ay_start, 13)
+            current_block_idx = None
+            for i, (s, e) in enumerate(blocks):
+                if s <= case_date <= e:
+                    current_block_idx = i
+                    break
+
+            if current_block_idx is not None:
+                hdr = hdr_for_block(blocks[current_block_idx][0], blocks[current_block_idx][1])
+                if hdr in schedule_df.columns:
+                    team_norm = norm_label(team_name)
+                    for res in schedule_df.index:
+                        if norm_label(schedule_df.loc[res, hdr]) == team_norm:
+                            residents.append(res)
+
+            # If no residents found on team, return all
+            if not residents:
+                return list(st.session_state.roster_table["Resident"].dropna().unique())
+
+            return residents
+
+        team_residents = get_residents_on_team(attending_team)
+        all_residents_list = list(st.session_state.roster_table["Resident"].dropna().unique())
+
+        with assign_cols[0]:
+            auto_assign = st.checkbox("Auto-assign", value=True, key="new_case_auto_assign",
+                                     help="Automatically assign based on PGY level and case needs")
+
+        with assign_cols[1]:
+            primary_resident = st.selectbox("Primary Resident:",
+                                           options=["(Auto)"] + team_residents if auto_assign else all_residents_list,
+                                           key="new_case_primary_resident")
+
+        with assign_cols[2]:
+            secondary_resident = st.selectbox("Secondary Resident (optional):",
+                                             options=["(None)"] + all_residents_list,
+                                             key="new_case_secondary_resident")
+
+        if st.button("Add to Schedule", type="primary"):
+            new_case = {
+                "date": case_date.isoformat(),
+                "time": case_time.isoformat() if case_time else "",
+                "type": case_type,
+                "attending": case_attending,
+                "team": attending_team,
+                "procedure": case_procedure,
+                "cpt": case_cpt,
+                "location": case_location,
+                "primary_resident": primary_resident if primary_resident != "(Auto)" else "",
+                "secondary_resident": secondary_resident if secondary_resident != "(None)" else "",
+                "auto_assign": auto_assign
+            }
+            st.session_state.weekly_schedule.append(new_case)
+            st.success(f"Added: {case_procedure} with {case_attending}")
+            st.rerun()
+
+    # Upload Epic export option
+    with st.expander("📤 Upload Schedule (Epic Export)"):
+        st.markdown("""
+**How to export from Epic Reporting Workbench:**
+1. Run your OR Schedule report for the week
+2. Export as Excel
+3. Upload below
+        """)
+
+        epic_upload = st.file_uploader("Upload Epic Schedule Export:", type=["xlsx", "xls", "csv"],
+                                       key="epic_schedule_upload")
+
+        if epic_upload:
+            try:
+                if epic_upload.name.endswith('.csv'):
+                    epic_df = pd.read_csv(epic_upload)
+                else:
+                    epic_df = pd.read_excel(epic_upload)
+
+                st.success(f"✅ Loaded {len(epic_df)} rows")
+                st.dataframe(epic_df.head(), use_container_width=True)
+
+                # Column mapping
+                st.markdown("**Map columns:**")
+                map_cols = st.columns(4)
+                with map_cols[0]:
+                    epic_date_col = st.selectbox("Date column:", epic_df.columns.tolist(), key="epic_date_col")
+                with map_cols[1]:
+                    epic_proc_col = st.selectbox("Procedure column:", epic_df.columns.tolist(), key="epic_proc_col")
+                with map_cols[2]:
+                    epic_attending_col = st.selectbox("Attending column:", epic_df.columns.tolist(), key="epic_attending_col")
+                with map_cols[3]:
+                    epic_loc_col = st.selectbox("Location column:", ["(None)"] + epic_df.columns.tolist(), key="epic_loc_col")
+
+                if st.button("Import Schedule"):
+                    imported = 0
+                    for _, row in epic_df.iterrows():
+                        try:
+                            case_date_val = pd.to_datetime(row[epic_date_col]).date()
+                            attending_name = str(row[epic_attending_col]).strip()
+
+                            # Try to match attending
+                            matched_attending = None
+                            for att in ALL_ATTENDINGS:
+                                if att.lower() in attending_name.lower() or attending_name.lower() in att.lower():
+                                    matched_attending = att
+                                    break
+
+                            new_case = {
+                                "date": case_date_val.isoformat(),
+                                "time": "",
+                                "type": "OR Case",
+                                "attending": matched_attending or attending_name,
+                                "team": ALL_ATTENDINGS.get(matched_attending, "Other") if matched_attending else "Other",
+                                "procedure": str(row[epic_proc_col]),
+                                "cpt": "",
+                                "location": str(row[epic_loc_col]) if epic_loc_col != "(None)" else "",
+                                "primary_resident": "",
+                                "secondary_resident": "",
+                                "auto_assign": True
+                            }
+                            st.session_state.weekly_schedule.append(new_case)
+                            imported += 1
+                        except Exception:
+                            continue
+
+                    st.success(f"Imported {imported} cases")
+                    st.rerun()
+
+            except Exception as e:
+                st.error(f"Error reading file: {e}")
+
+    # Display current schedule
+    st.markdown("---")
+    st.markdown("### 📋 This Week's Schedule")
+
+    # Filter to current week
+    week_end = schedule_week_start + timedelta(days=6)
+    week_cases = [c for c in st.session_state.weekly_schedule
+                  if schedule_week_start <= date.fromisoformat(c["date"]) <= week_end]
+
+    if week_cases:
+        # Auto-assign residents to cases that need it
+        def auto_assign_resident_to_case(case_dict):
+            """Auto-assign resident based on PGY level and case needs."""
+            if case_dict.get("primary_resident") and case_dict["primary_resident"] != "(Auto)":
+                return case_dict["primary_resident"], case_dict.get("secondary_resident", "")
+
+            # Get residents on the team
+            team_residents = get_residents_on_team(case_dict["team"])
+            if not team_residents:
+                return "", ""
+
+            # Get case logs to check who needs what
+            cpt = case_dict.get("cpt", "")
+            case_category = None
+            if cpt and cpt in CPT_TO_CATEGORY:
+                case_category = CPT_TO_CATEGORY[cpt][0]
+
+            # Score residents: prioritize higher PGY who still need the case type
+            def score_resident(res):
+                # Get PGY level
+                roster_match = st.session_state.roster_table[
+                    st.session_state.roster_table["Resident"].str.strip() == res.strip()
+                ]
+                if roster_match.empty:
+                    return (0, 0)
+
+                pgy_str = roster_match["PGY"].iloc[0]
+                pgy_num = int(pgy_str.replace("PGY-", "")) if "PGY-" in str(pgy_str) else 0
+
+                # Check if they need this case type
+                need_score = 0
+                if case_category and res in st.session_state.case_logs:
+                    counts = count_cases_by_category(st.session_state.case_logs[res])
+                    if case_category in counts:
+                        minimum = ACGME_CATEGORIES.get(case_category, {}).get("minimum", 0)
+                        current = counts[case_category]["total"]
+                        if current < minimum:
+                            need_score = minimum - current  # Higher need = higher score
+
+                return (pgy_num, need_score)
+
+            # Sort by PGY (descending), then by need (descending)
+            scored = [(res, score_resident(res)) for res in team_residents]
+            scored.sort(key=lambda x: (x[1][0], x[1][1]), reverse=True)
+
+            primary = scored[0][0] if scored else ""
+
+            # For Teaching Assist (PGY-4+), can assign a junior too
+            secondary = ""
+            if len(scored) > 1 and scored[0][1][0] >= 4:  # PGY-4 or higher
+                # Find a junior who needs the case
+                juniors = [s for s in scored[1:] if s[1][0] < scored[0][1][0]]
+                if juniors:
+                    secondary = juniors[0][0]
+
+            return primary, secondary
+
+        # Group by date
+        from collections import defaultdict
+        by_date = defaultdict(list)
+        for case in week_cases:
+            by_date[case["date"]].append(case)
+
+        for case_date_str in sorted(by_date.keys()):
+            case_date_obj = date.fromisoformat(case_date_str)
+            day_name = case_date_obj.strftime("%A, %B %d")
+            st.markdown(f"#### {day_name}")
+
+            day_cases = by_date[case_date_str]
+            for i, case in enumerate(day_cases):
+                # Auto-assign if needed
+                if case.get("auto_assign") and not case.get("primary_resident"):
+                    primary, secondary = auto_assign_resident_to_case(case)
+                    case["primary_resident"] = primary
+                    case["secondary_resident"] = secondary
+
+                # Display case
+                time_str = case.get("time", "")
+                if time_str:
+                    time_display = f"**{time_str[:5]}**"
+                else:
+                    time_display = ""
+
+                col1, col2, col3, col4 = st.columns([1, 2, 2, 1])
+
+                with col1:
+                    st.write(time_display)
+                    st.caption(case.get("type", "OR"))
+
+                with col2:
+                    st.write(f"**{case.get('procedure', 'TBD')}**")
+                    st.caption(f"{case.get('attending', '')} ({case.get('team', '')})")
+
+                with col3:
+                    primary = case.get("primary_resident", "")
+                    secondary = case.get("secondary_resident", "")
+                    if primary:
+                        st.write(f"👨‍⚕️ **{primary}**")
+                        if secondary:
+                            st.caption(f"+ {secondary} (assist)")
+                    else:
+                        st.write("⚠️ *Unassigned*")
+
+                with col4:
+                    if st.button("❌", key=f"del_case_{case_date_str}_{i}"):
+                        st.session_state.weekly_schedule.remove(case)
+                        st.rerun()
+
+                st.markdown("---")
+
+        # Summary stats
+        st.markdown("### 📊 Week Summary")
+        total_or = len([c for c in week_cases if c["type"] == "OR Case"])
+        total_clinic = len([c for c in week_cases if c["type"] == "Clinic"])
+
+        sum_cols = st.columns(3)
+        with sum_cols[0]:
+            st.metric("OR Cases", total_or)
+        with sum_cols[1]:
+            st.metric("Clinic Sessions", total_clinic)
+        with sum_cols[2]:
+            assigned = len([c for c in week_cases if c.get("primary_resident")])
+            st.metric("Assigned", f"{assigned}/{len(week_cases)}")
+
+    else:
+        st.info("No cases scheduled for this week. Add cases above or upload an Epic export.")
