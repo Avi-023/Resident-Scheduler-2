@@ -3668,20 +3668,55 @@ Supports PDF and Excel formats.
             key="case_log_upload"
         )
 
+        # Debug mode checkbox
+        show_pdf_debug = st.checkbox("Show PDF diagnostic info", value=False, key="pdf_debug_mode")
+
         if uploaded_file:
             try:
                 df = None
                 if uploaded_file.name.lower().endswith('.pdf'):
                     if HAS_PDFPLUMBER:
                         file_buffer = io.BytesIO(uploaded_file.read())
-                        df = parse_acgme_pdf(file_buffer, debug=False)
-                        if df is None or df.empty:
-                            st.warning("Standard parsing didn't work. Trying with debug info...")
+
+                        # Show diagnostic info if requested
+                        if show_pdf_debug:
                             file_buffer.seek(0)
-                            df = parse_acgme_pdf(file_buffer, debug=True)
-                            if df is None or df.empty:
-                                st.error("Could not extract data from PDF. Please try Excel format instead.")
-                                st.info("**Tip:** In ACGME, export as Excel (.xlsx) instead of PDF for best results.")
+                            st.markdown("### PDF Diagnostic Info")
+                            with pdfplumber.open(file_buffer) as pdf:
+                                st.write(f"**Pages:** {len(pdf.pages)}")
+                                for i, page in enumerate(pdf.pages):
+                                    st.markdown(f"#### Page {i+1}")
+
+                                    # Show extracted text
+                                    text = page.extract_text()
+                                    if text:
+                                        st.markdown("**Extracted Text (first 2000 chars):**")
+                                        st.code(text[:2000])
+                                    else:
+                                        st.warning("No text extracted from this page")
+
+                                    # Show extracted tables
+                                    tables = page.extract_tables()
+                                    if tables:
+                                        st.markdown(f"**Tables found:** {len(tables)}")
+                                        for j, table in enumerate(tables):
+                                            st.markdown(f"Table {j+1} ({len(table)} rows):")
+                                            if table:
+                                                # Show first 10 rows
+                                                preview = table[:10]
+                                                st.dataframe(pd.DataFrame(preview), use_container_width=True)
+                                    else:
+                                        st.warning("No tables extracted from this page")
+
+                            st.markdown("---")
+                            st.markdown("**Copy the text above and share it so I can fix the parser.**")
+                            file_buffer.seek(0)
+
+                        df = parse_acgme_pdf(file_buffer, debug=show_pdf_debug)
+                        if df is None or df.empty:
+                            if not show_pdf_debug:
+                                st.error("Could not extract data from PDF.")
+                                st.info("**Enable 'Show PDF diagnostic info' above** so we can see what's in the PDF and fix the parser.")
                     else:
                         st.error("PDF support not available. Please upload Excel format.")
                 elif uploaded_file.name.endswith('.csv'):
