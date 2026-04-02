@@ -213,69 +213,194 @@ try:
 except Exception:
     HAS_PDFPLUMBER = False
 
-def parse_acgme_pdf(file_buffer):
+def parse_acgme_pdf(file_buffer, debug=False):
     """Parse ACGME case log PDF (Resident Minimum Defined Categories report)."""
     if not HAS_PDFPLUMBER:
+        if debug:
+            st.error("pdfplumber not installed")
         return None
 
     try:
+        file_buffer.seek(0)
         all_rows = []
+        all_text = ""
+
         with pdfplumber.open(file_buffer) as pdf:
             for page in pdf.pages:
-                # Extract tables from the page
+                # Try table extraction first
                 tables = page.extract_tables()
                 for table in tables:
                     if table:
                         all_rows.extend(table)
 
-        if not all_rows:
-            # Try extracting text and parsing manually
-            file_buffer.seek(0)
-            with pdfplumber.open(file_buffer) as pdf:
-                text_content = ""
-                for page in pdf.pages:
-                    text_content += page.extract_text() or ""
-                return parse_acgme_text(text_content)
+                # Also get text for fallback
+                page_text = page.extract_text()
+                if page_text:
+                    all_text += page_text + "\n"
 
-        # Convert to DataFrame
-        # Find header row (contains "Category" or "Minimum")
-        header_idx = 0
-        for i, row in enumerate(all_rows):
-            if row and any(cell and ('category' in str(cell).lower() or 'minimum' in str(cell).lower()) for cell in row):
-                header_idx = i
-                break
+        # Try table-based parsing first
+        if all_rows:
+            df = parse_pdf_table_rows(all_rows, debug)
+            if df is not None and not df.empty:
+                return df
 
-        headers = all_rows[header_idx] if header_idx < len(all_rows) else all_rows[0]
-        data_rows = all_rows[header_idx + 1:]
+        # Fall back to text-based parsing
+        if all_text:
+            df = parse_acgme_text(all_text, debug)
+            if df is not None and not df.empty:
+                return df
 
-        # Clean headers
-        headers = [str(h).strip() if h else f"Col_{i}" for i, h in enumerate(headers)]
-
-        df = pd.DataFrame(data_rows, columns=headers)
-        return df
-
-    except Exception as e:
+        if debug:
+            st.error(f"No tables found and text parsing failed. Text length: {len(all_text)}")
         return None
 
-def parse_acgme_text(text_content):
+    except Exception as e:
+        if debug:
+            st.error(f"PDF parse error: {e}")
+        return None
+
+def parse_pdf_table_rows(all_rows, debug=False):
+    """Parse rows extracted from PDF tables."""
+    if not all_rows:
+        return None
+
+    # Find header row (contains "Category" or "Minimum" or "Defined")
+    header_idx = 0
+    for i, row in enumerate(all_rows):
+        if row and any(cell and any(kw in str(cell).lower() for kw in ['category', 'minimum', 'defined']) for cell in row if cell):
+            header_idx = i
+            break
+
+    if header_idx >= len(all_rows):
+        return None
+
+    headers = all_rows[header_idx]
+    data_rows = all_rows[header_idx + 1:]
+
+    # Clean headers - remove None/empty, strip whitespace
+    headers = [str(h).strip() if h else f"Col_{i}" for i, h in enumerate(headers)]
+
+    # Filter out empty rows
+    data_rows = [row for row in data_rows if row and any(cell for cell in row)]
+
+    if not data_rows:
+        return None
+
+    # Ensure all rows have same length as headers
+    cleaned_rows = []
+    for row in data_rows:
+        if len(row) < len(headers):
+            row = list(row) + [None] * (len(headers) - len(row))
+        elif len(row) > len(headers):
+            row = row[:len(headers)]
+        cleaned_rows.append(row)
+
+    df = pd.DataFrame(cleaned_rows, columns=headers)
+
+    if debug:
+        st.write(f"Parsed {len(df)} rows with columns: {list(df.columns)}")
+
+    return df
+
+def parse_acgme_text(text_content, debug=False):
     """Parse ACGME text content when table extraction fails."""
     if not text_content:
         return None
 
     lines = text_content.strip().split('\n')
     data = []
-    current_category = None
+
+    # First pass: find the header line to identify resident columns
+    header_line = None
+    resident_names = []
+    for line in lines:
+        if 'minimum' in line.lower() or 'category' in line.lower():
+            header_line = line
+            # Extract resident names (words after "Minimum" that aren't numbers)
+            parts = re.split(r'\s{2,}', line)
+            for p in parts:
+                p = p.strip()
+                if p and not p.replace(',', '').isdigit() and p.lower() not in ['category', 'minimum', 'defined', 'categories']:
+                    # Likely a resident name
+                    if len(p) > 2 and ' ' in p:  # Names usually have spaces
+                        resident_names.append(p)
+            break
+
+    if debug:
+        st.write(f"Found {len(lines)} lines, resident names: {resident_names}")
+
+    for line in lines:
+        line_stripped = line.strip()
+        if not line_stripped:
+            continue
+
+        # Skip header-like lines
+        if 'minimum' in line_stripped.lower() and 'category' in line_stripped.lower():
+            continue
+        if line_stripped.lower().startswith('page '):
+            continue
+
+        # Try to parse lines with format: "Category Name    Minimum    Count1    Count2..."
+        # Split by multiple spaces or tabs
+        parts = re.split(r'\s{2,}|\t+', line_stripped)
+
+        if len(parts) >= 2:
+            # Separate text parts from number parts
+            nums = []
+            text_parts = []
+
+            for p in parts:
+                p = p.strip()
+                # Check if it's a number (possibly with commas)
+                clean_p = p.replace(',', '').replace('.', '')
+                if clean_p.isdigit():
+                    nums.append(int(p.replace(',', '')))
+                elif p and not clean_p.isdigit():
+                    text_parts.append(p)
+
+            if nums and text_parts:
+                category = ' '.join(text_parts)
+                # Skip total/summary rows
+                if 'total' in category.lower() and 'major' not in category.lower():
+                    continue
+
+                row_data = {'Category': category}
+                if len(nums) >= 1:
+                    row_data['Minimum'] = nums[0]
+                if len(nums) >= 2:
+                    # Additional columns are resident counts
+                    if resident_names:
+                        for i, name in enumerate(resident_names):
+                            if i + 1 < len(nums):
+                                row_data[name] = nums[i + 1]
+                    else:
+                        row_data['Count'] = nums[1]
+
+                data.append(row_data)
+
+    if data:
+        df = pd.DataFrame(data)
+        if debug:
+            st.write(f"Text parsing found {len(df)} rows")
+        return df
+
+    return None
+
+def _old_parse_acgme_text(text_content):
+    """Legacy parser - kept for reference."""
+    if not text_content:
+        return None
+
+    lines = text_content.strip().split('\n')
+    data = []
 
     for line in lines:
         line = line.strip()
         if not line:
             continue
 
-        # Try to parse lines with format: "Category Name    Minimum    Count"
-        # Split by multiple spaces
         parts = re.split(r'\s{2,}', line)
         if len(parts) >= 2:
-            # Check if last parts are numbers
             try:
                 nums = []
                 text_parts = []
@@ -3549,9 +3674,14 @@ Supports PDF and Excel formats.
                 if uploaded_file.name.lower().endswith('.pdf'):
                     if HAS_PDFPLUMBER:
                         file_buffer = io.BytesIO(uploaded_file.read())
-                        df = parse_acgme_pdf(file_buffer)
+                        df = parse_acgme_pdf(file_buffer, debug=False)
                         if df is None or df.empty:
-                            st.error("Could not extract data from PDF. Try Excel format.")
+                            st.warning("Standard parsing didn't work. Trying with debug info...")
+                            file_buffer.seek(0)
+                            df = parse_acgme_pdf(file_buffer, debug=True)
+                            if df is None or df.empty:
+                                st.error("Could not extract data from PDF. Please try Excel format instead.")
+                                st.info("**Tip:** In ACGME, export as Excel (.xlsx) instead of PDF for best results.")
                     else:
                         st.error("PDF support not available. Please upload Excel format.")
                 elif uploaded_file.name.endswith('.csv'):
