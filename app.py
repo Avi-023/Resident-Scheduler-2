@@ -99,6 +99,100 @@ def load_schedule_from_cache():
     return None
 
 # --------------------------
+# Schedule Version Management
+# --------------------------
+def save_schedule_snapshot(name: str):
+    """Save current schedule state as a named snapshot."""
+    if "schedule_snapshots" not in st.session_state:
+        st.session_state.schedule_snapshots = {}
+
+    snapshot = {
+        "name": name,
+        "saved_at": time.time(),
+        "roster_table": st.session_state.get("roster_table", pd.DataFrame()).copy(),
+        "schedule_df": st.session_state.get("sched_df", pd.DataFrame()).copy(),
+        "dailies": {k: v.copy() for k, v in st.session_state.get("dailies", {}).items()},
+    }
+    st.session_state.schedule_snapshots[name] = snapshot
+    return snapshot
+
+def load_schedule_snapshot(name: str):
+    """Load a named snapshot into current state."""
+    if "schedule_snapshots" not in st.session_state:
+        return False
+    if name not in st.session_state.schedule_snapshots:
+        return False
+
+    snapshot = st.session_state.schedule_snapshots[name]
+    st.session_state.roster_table = snapshot["roster_table"].copy()
+    st.session_state.sched_df = snapshot["schedule_df"].copy()
+    st.session_state.dailies = {k: v.copy() for k, v in snapshot["dailies"].items()}
+    return True
+
+def export_snapshot_to_json(name: str) -> str:
+    """Export a snapshot to JSON string for download."""
+    if "schedule_snapshots" not in st.session_state:
+        return None
+    if name not in st.session_state.schedule_snapshots:
+        return None
+
+    snapshot = st.session_state.schedule_snapshots[name]
+
+    # Convert DataFrames to JSON-serializable format
+    export_data = {
+        "name": snapshot["name"],
+        "saved_at": snapshot["saved_at"],
+        "roster_table": snapshot["roster_table"].to_dict(orient="records"),
+        "schedule_df": snapshot["schedule_df"].to_dict(orient="split"),
+        "dailies": {k: v.to_dict(orient="split") for k, v in snapshot["dailies"].items()},
+    }
+    return json.dumps(export_data, indent=2)
+
+def import_snapshot_from_json(json_str: str) -> dict:
+    """Import a snapshot from JSON string."""
+    try:
+        data = json.loads(json_str)
+
+        # Reconstruct DataFrames
+        roster_table = pd.DataFrame(data["roster_table"])
+
+        schedule_data = data["schedule_df"]
+        schedule_df = pd.DataFrame(
+            schedule_data["data"],
+            index=schedule_data["index"],
+            columns=schedule_data["columns"]
+        )
+
+        dailies = {}
+        for k, v in data["dailies"].items():
+            dailies[k] = pd.DataFrame(v["data"], index=v["index"], columns=v["columns"])
+
+        snapshot = {
+            "name": data["name"],
+            "saved_at": data.get("saved_at", time.time()),
+            "roster_table": roster_table,
+            "schedule_df": schedule_df,
+            "dailies": dailies,
+        }
+        return snapshot
+    except Exception as e:
+        return None
+
+def get_snapshot_summary(snapshot: dict) -> dict:
+    """Get summary stats for a snapshot."""
+    schedule_df = snapshot.get("schedule_df", pd.DataFrame())
+    roster_df = snapshot.get("roster_table", pd.DataFrame())
+
+    if schedule_df.empty:
+        return {"residents": 0, "blocks": 0}
+
+    return {
+        "residents": len(schedule_df),
+        "blocks": len([c for c in schedule_df.columns if c.startswith("Block")]),
+        "saved_at": snapshot.get("saved_at", 0),
+    }
+
+# --------------------------
 # Optional libraries
 # --------------------------
 try:
@@ -2784,6 +2878,77 @@ with st.sidebar:
     if "random_seed" not in st.session_state:
         st.session_state.random_seed = 0
 
+    # --------------------------
+    # Schedule Versions
+    # --------------------------
+    st.markdown("---")
+    st.markdown("### Schedule Versions")
+
+    # Initialize snapshots storage
+    if "schedule_snapshots" not in st.session_state:
+        st.session_state.schedule_snapshots = {}
+
+    # Save current schedule as snapshot
+    snapshot_name = st.text_input("Version name:", key="snapshot_name_input", placeholder="e.g., Draft 1 - more ICU")
+    if st.button("💾 Save Current as Version"):
+        if snapshot_name.strip():
+            save_schedule_snapshot(snapshot_name.strip())
+            st.success(f"Saved: {snapshot_name}")
+        else:
+            st.warning("Enter a version name")
+
+    # List saved versions
+    if st.session_state.schedule_snapshots:
+        st.markdown("**Saved Versions:**")
+        for name, snap in st.session_state.schedule_snapshots.items():
+            summary = get_snapshot_summary(snap)
+            saved_time = time.strftime("%H:%M", time.localtime(summary["saved_at"])) if summary["saved_at"] else ""
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.caption(f"📋 {name} ({summary['residents']} residents) - {saved_time}")
+            with col2:
+                if st.button("Load", key=f"load_{name}"):
+                    load_schedule_snapshot(name)
+                    st.success(f"Loaded: {name}")
+                    st.rerun()
+
+    # Download/Upload versions
+    st.markdown("---")
+    st.markdown("**Import/Export**")
+
+    # Download dropdown and button
+    if st.session_state.schedule_snapshots:
+        download_choice = st.selectbox("Download version:", list(st.session_state.schedule_snapshots.keys()), key="download_version_choice")
+        json_data = export_snapshot_to_json(download_choice)
+        if json_data:
+            safe_name = re.sub(r'[^\w\s-]', '', download_choice).strip().replace(' ', '_')
+            st.download_button(
+                "⬇️ Download as File",
+                data=json_data,
+                file_name=f"schedule_{safe_name}.json",
+                mime="application/json",
+                key="download_snapshot_btn"
+            )
+
+    # Upload version
+    uploaded_version = st.file_uploader("Upload version file:", type=["json"], key="upload_version_file")
+    if uploaded_version:
+        try:
+            json_str = uploaded_version.read().decode("utf-8")
+            imported = import_snapshot_from_json(json_str)
+            if imported:
+                import_name = imported["name"]
+                # Avoid overwriting - add suffix if exists
+                if import_name in st.session_state.schedule_snapshots:
+                    import_name = f"{import_name} (imported)"
+                st.session_state.schedule_snapshots[import_name] = imported
+                st.success(f"Imported: {import_name}")
+                st.rerun()
+            else:
+                st.error("Could not parse version file")
+        except Exception as e:
+            st.error(f"Error importing: {e}")
+
 # Initialize default roster (display moved to Yearly tab)
 _default_roster=pd.DataFrame([
     ["Avi Robinson","PGY-5","N","Y","","","",""],
@@ -2985,6 +3150,91 @@ with tabs[0]:
                          use_container_width=True, hide_index=True)
     else:
         st.info("No schedule yet. Edit the roster above and click 'Generate schedule from roster' to create one.")
+
+    # Version Comparison Section
+    if st.session_state.get("schedule_snapshots"):
+        with st.expander("📊 Compare Versions", expanded=False):
+            snapshot_names = list(st.session_state.schedule_snapshots.keys())
+
+            if len(snapshot_names) >= 1:
+                col1, col2 = st.columns(2)
+                with col1:
+                    compare_left = st.selectbox("Version A:", ["(Current)"] + snapshot_names, key="compare_left")
+                with col2:
+                    compare_right = st.selectbox("Version B:", ["(Current)"] + snapshot_names, index=min(1, len(snapshot_names)), key="compare_right")
+
+                # Get the two schedules to compare
+                def get_schedule_for_compare(choice):
+                    if choice == "(Current)":
+                        return st.session_state.get("sched_df", pd.DataFrame())
+                    else:
+                        snap = st.session_state.schedule_snapshots.get(choice, {})
+                        return snap.get("schedule_df", pd.DataFrame())
+
+                left_df = get_schedule_for_compare(compare_left)
+                right_df = get_schedule_for_compare(compare_right)
+
+                if not left_df.empty and not right_df.empty:
+                    st.markdown(f"**Differences between {compare_left} and {compare_right}:**")
+
+                    # Find differences
+                    differences = []
+                    common_residents = set(left_df.index) & set(right_df.index)
+                    common_blocks = [c for c in left_df.columns if c in right_df.columns]
+
+                    for resident in sorted(common_residents):
+                        for block in common_blocks:
+                            left_val = str(left_df.loc[resident, block]) if resident in left_df.index else ""
+                            right_val = str(right_df.loc[resident, block]) if resident in right_df.index else ""
+                            if left_val != right_val:
+                                differences.append({
+                                    "Resident": resident,
+                                    "Block": block,
+                                    compare_left: left_val,
+                                    compare_right: right_val
+                                })
+
+                    if differences:
+                        diff_df = pd.DataFrame(differences)
+                        st.dataframe(diff_df, use_container_width=True, hide_index=True)
+                        st.caption(f"{len(differences)} difference(s) found")
+                    else:
+                        st.success("No differences found - schedules are identical!")
+
+                    # Summary stats comparison
+                    st.markdown("**Summary Comparison:**")
+                    def count_rotations(df):
+                        counts = {}
+                        for col in df.columns:
+                            for val in df[col].dropna():
+                                val_str = str(val).strip()
+                                if val_str:
+                                    counts[val_str] = counts.get(val_str, 0) + 1
+                        return counts
+
+                    left_counts = count_rotations(left_df)
+                    right_counts = count_rotations(right_df)
+                    all_rotations = sorted(set(left_counts.keys()) | set(right_counts.keys()))
+
+                    summary_data = []
+                    for rot in all_rotations:
+                        left_c = left_counts.get(rot, 0)
+                        right_c = right_counts.get(rot, 0)
+                        diff = right_c - left_c
+                        diff_str = f"+{diff}" if diff > 0 else str(diff) if diff < 0 else "="
+                        summary_data.append({
+                            "Rotation": rot,
+                            compare_left: left_c,
+                            compare_right: right_c,
+                            "Diff": diff_str
+                        })
+
+                    summary_df = pd.DataFrame(summary_data)
+                    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Select two versions with schedule data to compare")
+            else:
+                st.info("Save at least one version to compare (use sidebar)")
 
 # Daily tab
 with tabs[1]:
