@@ -3868,6 +3868,13 @@ Supports PDF and Excel formats.
 
         def render_progress_bar(current, minimum, label):
             """Render a progress bar with color coding."""
+            try:
+                current = int(float(current)) if current else 0
+                minimum = int(float(minimum)) if minimum else 0
+            except:
+                current = 0
+                minimum = 0
+
             if minimum == 0:
                 pct = 100 if current > 0 else 0
             else:
@@ -3916,13 +3923,21 @@ Supports PDF and Excel formats.
             for res in all_residents:
                 res_data = st.session_state.case_logs[res]
                 progress = get_resident_progress(res_data)
-                total_counted = sum(cat_data.get("total", 0) for cat_data in progress.values())
+
+                # Sum all categories
+                total_counted = 0
+                for cat_data in progress.values():
+                    if isinstance(cat_data, dict):
+                        total_counted += cat_data.get("total", 0)
 
                 # Get PGY level from roster
-                roster_match = st.session_state.roster_table[
-                    st.session_state.roster_table["Resident"].str.strip() == res.strip()
-                ]
-                pgy = roster_match["PGY"].iloc[0] if not roster_match.empty else "?"
+                try:
+                    roster_match = st.session_state.roster_table[
+                        st.session_state.roster_table["Resident"].str.strip() == res.strip()
+                    ]
+                    pgy = roster_match["PGY"].iloc[0] if not roster_match.empty else "?"
+                except:
+                    pgy = "?"
 
                 # Calculate completion percentage
                 pct = (total_counted / ACGME_TOTAL_MINIMUM * 100) if ACGME_TOTAL_MINIMUM > 0 else 0
@@ -3934,11 +3949,11 @@ Supports PDF and Excel formats.
                     "Progress": f"{total_counted}/{ACGME_TOTAL_MINIMUM} ({pct:.0f}%)"
                 })
 
-            summary_df = pd.DataFrame(summary_data)
-            st.dataframe(summary_df, use_container_width=True, hide_index=True)
-
-            # Bar chart of total cases by resident
             if summary_data:
+                summary_df = pd.DataFrame(summary_data)
+                st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+                # Bar chart of total cases by resident
                 chart_df = pd.DataFrame(summary_data)
                 chart = alt.Chart(chart_df).mark_bar().encode(
                     x=alt.X("Resident:N", sort="-y"),
@@ -3946,6 +3961,18 @@ Supports PDF and Excel formats.
                     color=alt.Color("PGY:N")
                 ).properties(height=300, title="Total Cases by Resident")
                 st.altair_chart(chart, use_container_width=True)
+            else:
+                st.info("No case data found for residents.")
+
+            # Debug view
+            with st.expander("View Raw Imported Data", expanded=False):
+                for res in all_residents:
+                    st.markdown(f"**{res}:**")
+                    res_data = st.session_state.case_logs[res]
+                    if isinstance(res_data, dict):
+                        st.json(res_data)
+                    else:
+                        st.dataframe(res_data)
 
         else:
             # Individual resident view
@@ -3954,39 +3981,45 @@ Supports PDF and Excel formats.
 
             st.markdown(f"### {selected_resident}")
 
-            # Total progress
-            total_counted = sum(cat_data.get("total", 0) for cat_data in progress.values())
+            # Total progress - sum all categories from the imported data
+            total_counted = 0
+            for cat_data in progress.values():
+                if isinstance(cat_data, dict):
+                    total_counted += cat_data.get("total", 0)
+
             st.markdown("#### Overall Progress")
             render_progress_bar(total_counted, ACGME_TOTAL_MINIMUM, "Total Major Cases")
 
-            # Category breakdown
+            # Category breakdown - show ALL categories from imported data
             st.markdown("#### Progress by Category")
 
-            for cat, cat_info in ACGME_CATEGORIES.items():
-                minimum = cat_info["minimum"]
-                # Get current from progress data (either from summary or calculated)
-                cat_progress = progress.get(cat, {})
-                current = cat_progress.get("total", 0)
-                # Use minimum from import if available, otherwise from ACGME_CATEGORIES
-                minimum_display = cat_progress.get("minimum", minimum)
+            # Use categories from the imported data, not just predefined ones
+            categories_to_show = progress.keys() if progress else ACGME_CATEGORIES.keys()
 
-                with st.expander(f"{cat} ({current}/{minimum_display})", expanded=(current < minimum_display)):
-                    render_progress_bar(current, minimum_display, cat)
+            for cat in categories_to_show:
+                if isinstance(progress.get(cat), dict):
+                    cat_progress = progress[cat]
+                    current = cat_progress.get("total", 0)
+                    minimum_display = cat_progress.get("minimum", ACGME_CATEGORIES.get(cat, {}).get("minimum", 0))
 
-                    # Subcategories from either source
-                    subcats = cat_progress.get("subcategories", {})
-                    expected_subcats = cat_info.get("subcategories", {})
+                    # Skip empty categories
+                    if current == 0 and minimum_display == 0:
+                        continue
 
-                    # Show subcategories from progress data
-                    for subcat, sub_data in subcats.items():
-                        if isinstance(sub_data, dict):
-                            sub_cur = sub_data.get("count", 0)
-                            sub_min = sub_data.get("minimum", expected_subcats.get(subcat, {}).get("minimum", 0))
-                        else:
-                            sub_cur = sub_data
-                            sub_min = expected_subcats.get(subcat, {}).get("minimum", 0)
-                        if sub_min > 0 or sub_cur > 0:
-                            render_progress_bar(sub_cur, sub_min, f"  └─ {subcat}")
+                    with st.expander(f"{cat} ({current}/{minimum_display})", expanded=(current < minimum_display if minimum_display > 0 else False)):
+                        render_progress_bar(current, minimum_display, cat)
+
+                        # Subcategories
+                        subcats = cat_progress.get("subcategories", {})
+                        for subcat, sub_data in subcats.items():
+                            if isinstance(sub_data, dict):
+                                sub_cur = sub_data.get("count", sub_data.get("total", 0))
+                                sub_min = sub_data.get("minimum", 0)
+                            else:
+                                sub_cur = sub_data
+                                sub_min = 0
+                            if sub_min > 0 or sub_cur > 0:
+                                render_progress_bar(sub_cur, sub_min, f"  └─ {subcat}")
 
             # Clear data button
             if st.button(f"🗑️ Clear data for {selected_resident}", key="clear_resident_data"):
