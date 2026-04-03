@@ -3225,9 +3225,8 @@ def generate_schedule_from_roster():
         "random_seed": st.session_state.random_seed,
     }
     st.session_state.roster_df = roster_norm.copy()
-    base_fixed = st.session_state.get("schedule_df", None)
 
-    yearly = auto_generate_yearly(roster_norm.copy(), ay_start, constraints, base_fixed=base_fixed)
+    yearly = auto_generate_yearly(roster_norm.copy(), ay_start, constraints)
     if st.session_state.use_optimizer:
         yearly = polish_with_optimizer(yearly, roster_norm.copy(), ay_start, constraints, time_limit_s=st.session_state.opt_time_limit)
 
