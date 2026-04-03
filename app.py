@@ -3874,18 +3874,37 @@ Supports PDF and Excel formats.
                 elif uploaded_file.name.endswith('.csv'):
                     df = pd.read_csv(uploaded_file)
                 else:
-                    df = pd.read_excel(uploaded_file)
+                    # Try reading Excel, handling header row issues
+                    df = pd.read_excel(uploaded_file, header=None)  # Read without headers first
 
                 if df is not None and not df.empty:
                     st.success(f"✅ Loaded file with {len(df)} rows")
 
+                    # Show raw preview
+                    st.markdown("**Raw Data Preview (first 10 rows):**")
+                    st.dataframe(df.head(10), use_container_width=True)
+
+                    # Let user select header row
+                    header_row = st.number_input("Which row contains the column headers? (0 = first row)",
+                                                  min_value=0, max_value=min(10, len(df)-1), value=0, key="header_row_select")
+
+                    # Re-read with correct header
+                    uploaded_file.seek(0)
+                    if uploaded_file.name.endswith('.csv'):
+                        df = pd.read_csv(uploaded_file, header=int(header_row))
+                    else:
+                        df = pd.read_excel(uploaded_file, header=int(header_row))
+
+                    df.columns = df.columns.astype(str).str.strip()
+
+                    st.markdown("**Parsed Data (with headers):**")
+                    st.dataframe(df.head(10), use_container_width=True)
+
+                    st.markdown(f"**Columns found:** {', '.join(df.columns.tolist())}")
+
                     # Check if it's summary format
                     if is_summary_format(df):
                         st.info("📊 Detected ACGME summary format (category totals)")
-
-                        # Show preview
-                        st.markdown("**Preview:**")
-                        st.dataframe(df.head(10), use_container_width=True)
 
                         if st.button("Import Summary Data"):
                             imported = import_summary_file(df, uploaded_file.name)
@@ -3896,22 +3915,58 @@ Supports PDF and Excel formats.
                             else:
                                 st.error("Could not parse resident data from file. Check the format.")
                     else:
-                        # Individual case format - need column mapping
-                        st.info("📋 Detected individual case format")
-                        df.columns = df.columns.str.strip()
-                        possible_resident_cols = [c for c in df.columns if any(x in c.lower() for x in ['resident', 'name', 'trainee'])]
-                        possible_cpt_cols = [c for c in df.columns if any(x in c.lower() for x in ['cpt', 'code', 'procedure'])]
+                        # Let user manually map columns for ACGME summary format
+                        st.info("📋 Map columns for ACGME summary import")
 
-                        resident_col = st.selectbox("Select Resident column:", options=df.columns.tolist(),
-                                                   index=df.columns.tolist().index(possible_resident_cols[0]) if possible_resident_cols else 0)
-                        cpt_col = st.selectbox("Select CPT Code column:", options=df.columns.tolist(),
-                                               index=df.columns.tolist().index(possible_cpt_cols[0]) if possible_cpt_cols else 0)
-                        role_col = st.selectbox("Select Role column (optional):", options=["(None)"] + df.columns.tolist())
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            cat_col = st.selectbox("Category column:", options=df.columns.tolist(), index=0, key="cat_col_select")
+                        with col2:
+                            min_col = st.selectbox("Minimum column:", options=["(None)"] + df.columns.tolist(), key="min_col_select")
 
-                        if st.button("Import Cases"):
-                            for resident in df[resident_col].unique():
-                                if pd.isna(resident) or str(resident).strip() == "":
-                                    continue
+                        # Resident columns - all remaining columns with numeric data
+                        other_cols = [c for c in df.columns if c != cat_col and c != min_col and c != "(None)"]
+                        resident_cols = st.multiselect("Resident columns (select all that apply):",
+                                                       options=other_cols, default=other_cols, key="resident_cols_select")
+
+                        if st.button("Import Case Log Data"):
+                            if not resident_cols:
+                                st.error("Please select at least one resident column")
+                            else:
+                                # Parse manually with selected columns
+                                for res_col in resident_cols:
+                                    res_data = {}
+                                    for _, row in df.iterrows():
+                                        cat_value = str(row.get(cat_col, "")).strip()
+                                        if not cat_value or cat_value.lower() in ['nan', 'none', '', 'total']:
+                                            continue
+                                        if 'total' in cat_value.lower():
+                                            continue
+
+                                        try:
+                                            count = int(float(str(row.get(res_col, 0)).replace(',', '')))
+                                        except:
+                                            count = 0
+
+                                        minimum = 0
+                                        if min_col and min_col != "(None)":
+                                            try:
+                                                minimum = int(float(str(row.get(min_col, 0)).replace(',', '')))
+                                            except:
+                                                minimum = 0
+
+                                        if cat_value not in res_data:
+                                            res_data[cat_value] = {"total": count, "minimum": minimum, "subcategories": {}}
+                                        else:
+                                            # It's a subcategory
+                                            pass
+
+                                    if res_data:
+                                        st.session_state.case_logs[res_col] = res_data
+
+                                save_case_logs_to_cache(st.session_state.case_logs)
+                                st.success(f"✅ Imported data for: {', '.join(resident_cols)}")
+                                st.rerun()
                                 resident_df = df[df[resident_col] == resident].copy()
                                 if resident not in st.session_state.case_logs:
                                     st.session_state.case_logs[resident] = resident_df
