@@ -3162,6 +3162,17 @@ _default_roster=pd.DataFrame([
 if "roster_table" not in st.session_state:
     st.session_state.roster_table = _default_roster.copy()
 
+# Load saved schedule from cache on startup
+if "schedule_df" not in st.session_state:
+    cached_schedule = load_schedule_from_cache()
+    if cached_schedule:
+        st.session_state.schedule_df = cached_schedule.get("schedule_df")
+        st.session_state.sched_df = cached_schedule.get("schedule_df")
+        st.session_state.dailies = cached_schedule.get("dailies", {})
+        if cached_schedule.get("roster_df") is not None:
+            st.session_state.roster_table = cached_schedule.get("roster_df")
+        st.toast("📅 Loaded saved schedule")
+
 # Edit mode toggle (used across all tabs)
 edit_mode = st.toggle("Edit mode", value=True, help="ON = tables editable; OFF = preview (weekday colors only)")
 
@@ -3253,6 +3264,66 @@ has_schedule = schedule_df is not None and not schedule_df.empty
 
 # Yearly tab
 with tabs[0]:
+    # Save/Load Schedule section
+    with st.expander("💾 Save / Load Schedule", expanded=False):
+        st.caption("Save your finalized schedule to a file, or load a previously saved schedule.")
+
+        col_save, col_load = st.columns(2)
+
+        with col_save:
+            st.markdown("**Save Current Schedule**")
+            if has_schedule:
+                # Export schedule as JSON
+                export_data = {
+                    "schedule_df": schedule_df.to_dict(orient="split"),
+                    "dailies": {k: v.to_dict(orient="split") for k, v in (dailies or {}).items()},
+                    "roster_df": st.session_state.roster_table.to_dict(orient="records"),
+                    "saved_at": time.time()
+                }
+                json_str = json.dumps(export_data, indent=2)
+                st.download_button(
+                    "⬇️ Download Schedule File",
+                    data=json_str,
+                    file_name="schedule_backup.json",
+                    mime="application/json",
+                    help="Save this file to your computer. Upload it next time to restore your schedule."
+                )
+            else:
+                st.info("Create a schedule first, then save it here.")
+
+        with col_load:
+            st.markdown("**Load Saved Schedule**")
+            uploaded_schedule = st.file_uploader("Upload schedule file", type=["json"], key="load_schedule_file")
+            if uploaded_schedule:
+                try:
+                    data = json.loads(uploaded_schedule.read().decode("utf-8"))
+
+                    # Reconstruct DataFrames
+                    sched_data = data["schedule_df"]
+                    loaded_schedule = pd.DataFrame(
+                        sched_data["data"],
+                        index=sched_data["index"],
+                        columns=sched_data["columns"]
+                    )
+
+                    loaded_dailies = {}
+                    for k, v in data.get("dailies", {}).items():
+                        loaded_dailies[k] = pd.DataFrame(v["data"], index=v["index"], columns=v["columns"])
+
+                    loaded_roster = pd.DataFrame(data.get("roster_df", []))
+
+                    if st.button("✅ Load This Schedule"):
+                        st.session_state.schedule_df = loaded_schedule
+                        st.session_state.sched_df = loaded_schedule
+                        st.session_state.dailies = loaded_dailies
+                        if not loaded_roster.empty:
+                            st.session_state.roster_table = loaded_roster
+                        save_schedule_to_cache(loaded_dailies, loaded_schedule, loaded_roster)
+                        st.success("Schedule loaded successfully!")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Error loading schedule: {e}")
+
     # Roster section (always visible in Yearly tab)
     with st.expander("Roster (editable)", expanded=not has_schedule):
         roster = show_table(st.session_state.roster_table, "roster_editor", editable=True, hide_index=True, index_name_hint="Resident")
@@ -3859,14 +3930,9 @@ Supports PDF and Excel formats.
     # Dashboard display
     if st.session_state.case_logs:
         st.markdown("---")
-        st.markdown("### 📈 Case Log Progress by Resident")
+        st.markdown("### 📈 Case Log Progress Dashboard")
 
-        # Resident selector
-        all_residents = sorted(st.session_state.case_logs.keys())
-        selected_resident = st.selectbox("Select Resident:", options=["(All Residents)"] + all_residents,
-                                         key="case_log_resident_view")
-
-        def render_progress_bar(current, minimum, label):
+        def render_progress_bar(current, minimum, label, color=None):
             """Render a progress bar with color coding."""
             try:
                 current = int(float(current)) if current else 0
@@ -3880,7 +3946,8 @@ Supports PDF and Excel formats.
             else:
                 pct = min(100, (current / minimum) * 100)
 
-            color = "#28a745" if pct >= 100 else "#ffc107" if pct >= 50 else "#dc3545"
+            if color is None:
+                color = "#28a745" if pct >= 100 else "#ffc107" if pct >= 50 else "#dc3545"
 
             st.markdown(f"""
             <div style="margin-bottom: 8px;">
@@ -3897,10 +3964,8 @@ Supports PDF and Excel formats.
         def get_resident_progress(res_data):
             """Get progress data from either summary dict or DataFrame."""
             if isinstance(res_data, dict):
-                # Summary format: {category: {"total": N, "minimum": M, "subcategories": {...}}}
                 return res_data
             elif isinstance(res_data, pd.DataFrame):
-                # Individual cases format - count by CPT codes
                 counts = {cat: {"total": 0, "minimum": ACGME_CATEGORIES[cat]["minimum"], "subcategories": {}} for cat in ACGME_CATEGORIES}
                 cpt_col = None
                 for c in res_data.columns:
@@ -3917,119 +3982,215 @@ Supports PDF and Excel formats.
                 return counts
             return {}
 
-        if selected_resident == "(All Residents)":
-            # Summary view for all residents
-            summary_data = []
-            for res in all_residents:
-                res_data = st.session_state.case_logs[res]
-                progress = get_resident_progress(res_data)
+        def get_pgy_sort_key(pgy_str):
+            """Extract numeric PGY level for sorting."""
+            try:
+                return int(re.search(r'\d+', str(pgy_str)).group())
+            except:
+                return 99
 
-                # Sum all categories
-                total_counted = 0
-                for cat_data in progress.values():
-                    if isinstance(cat_data, dict):
-                        total_counted += cat_data.get("total", 0)
+        # Get all residents with their PGY levels and sort by PGY (intern to senior)
+        all_residents = list(st.session_state.case_logs.keys())
+        resident_pgy_list = []
+        for res in all_residents:
+            try:
+                roster_match = st.session_state.roster_table[
+                    st.session_state.roster_table["Resident"].str.strip() == res.strip()
+                ]
+                pgy = roster_match["PGY"].iloc[0] if not roster_match.empty else "PGY-?"
+            except:
+                pgy = "PGY-?"
+            resident_pgy_list.append((res, pgy))
 
-                # Get PGY level from roster
-                try:
-                    roster_match = st.session_state.roster_table[
-                        st.session_state.roster_table["Resident"].str.strip() == res.strip()
-                    ]
-                    pgy = roster_match["PGY"].iloc[0] if not roster_match.empty else "?"
-                except:
-                    pgy = "?"
+        # Sort by PGY level (1 to 5)
+        resident_pgy_list.sort(key=lambda x: get_pgy_sort_key(x[1]))
 
-                # Calculate completion percentage
-                pct = (total_counted / ACGME_TOTAL_MINIMUM * 100) if ACGME_TOTAL_MINIMUM > 0 else 0
+        # PGY colors
+        PGY_COLORS = {
+            "PGY-1": "#FF6B6B",  # Red
+            "PGY-2": "#4ECDC4",  # Teal
+            "PGY-3": "#45B7D1",  # Blue
+            "PGY-4": "#96CEB4",  # Green
+            "PGY-5": "#9B59B6",  # Purple
+        }
 
-                summary_data.append({
-                    "Resident": res,
-                    "PGY": pgy,
-                    "Total Cases": total_counted,
-                    "Progress": f"{total_counted}/{ACGME_TOTAL_MINIMUM} ({pct:.0f}%)"
-                })
+        # Summary section with pie chart
+        st.markdown("#### 📊 Program Overview")
 
-            if summary_data:
-                summary_df = pd.DataFrame(summary_data)
-                st.dataframe(summary_df, use_container_width=True, hide_index=True)
-
-                # Bar chart of total cases by resident
-                chart_df = pd.DataFrame(summary_data)
-                chart = alt.Chart(chart_df).mark_bar().encode(
-                    x=alt.X("Resident:N", sort="-y"),
-                    y=alt.Y("Total Cases:Q"),
-                    color=alt.Color("PGY:N")
-                ).properties(height=300, title="Total Cases by Resident")
-                st.altair_chart(chart, use_container_width=True)
-            else:
-                st.info("No case data found for residents.")
-
-            # Debug view
-            with st.expander("View Raw Imported Data", expanded=False):
-                for res in all_residents:
-                    st.markdown(f"**{res}:**")
-                    res_data = st.session_state.case_logs[res]
-                    if isinstance(res_data, dict):
-                        st.json(res_data)
-                    else:
-                        st.dataframe(res_data)
-
-        else:
-            # Individual resident view
-            res_data = st.session_state.case_logs[selected_resident]
+        summary_data = []
+        for res, pgy in resident_pgy_list:
+            res_data = st.session_state.case_logs[res]
             progress = get_resident_progress(res_data)
 
-            st.markdown(f"### {selected_resident}")
-
-            # Total progress - sum all categories from the imported data
-            total_counted = 0
+            total_current = 0
+            total_minimum = 0
             for cat_data in progress.values():
                 if isinstance(cat_data, dict):
-                    total_counted += cat_data.get("total", 0)
+                    total_current += cat_data.get("total", 0)
+                    total_minimum += cat_data.get("minimum", 0)
 
-            st.markdown("#### Overall Progress")
-            render_progress_bar(total_counted, ACGME_TOTAL_MINIMUM, "Total Major Cases")
+            # Use the imported minimum or ACGME default
+            if total_minimum == 0:
+                total_minimum = ACGME_TOTAL_MINIMUM
 
-            # Category breakdown - show ALL categories from imported data
-            st.markdown("#### Progress by Category")
+            pct = (total_current / total_minimum * 100) if total_minimum > 0 else 0
 
-            # Use categories from the imported data, not just predefined ones
-            categories_to_show = progress.keys() if progress else ACGME_CATEGORIES.keys()
+            summary_data.append({
+                "Resident": res,
+                "PGY": pgy,
+                "Cases": total_current,
+                "Required": total_minimum,
+                "Progress %": round(pct, 1),
+                "Remaining": max(0, total_minimum - total_current)
+            })
 
-            for cat in categories_to_show:
-                if isinstance(progress.get(cat), dict):
-                    cat_progress = progress[cat]
-                    current = cat_progress.get("total", 0)
-                    minimum_display = cat_progress.get("minimum", ACGME_CATEGORIES.get(cat, {}).get("minimum", 0))
+        summary_df = pd.DataFrame(summary_data)
 
-                    # Skip empty categories
-                    if current == 0 and minimum_display == 0:
-                        continue
+        # Display summary table with color coding
+        col1, col2 = st.columns([2, 1])
 
-                    with st.expander(f"{cat} ({current}/{minimum_display})", expanded=(current < minimum_display if minimum_display > 0 else False)):
-                        render_progress_bar(current, minimum_display, cat)
+        with col1:
+            st.dataframe(
+                summary_df.style.background_gradient(subset=['Progress %'], cmap='RdYlGn', vmin=0, vmax=100),
+                use_container_width=True,
+                hide_index=True
+            )
 
-                        # Subcategories
-                        subcats = cat_progress.get("subcategories", {})
-                        for subcat, sub_data in subcats.items():
-                            if isinstance(sub_data, dict):
-                                sub_cur = sub_data.get("count", sub_data.get("total", 0))
-                                sub_min = sub_data.get("minimum", 0)
-                            else:
-                                sub_cur = sub_data
-                                sub_min = 0
-                            if sub_min > 0 or sub_cur > 0:
-                                render_progress_bar(sub_cur, sub_min, f"  └─ {subcat}")
+        with col2:
+            # Pie chart showing overall program progress
+            total_cases = summary_df["Cases"].sum()
+            total_required = summary_df["Required"].sum()
+            remaining = max(0, total_required - total_cases)
 
-            # Clear data button
-            if st.button(f"🗑️ Clear data for {selected_resident}", key="clear_resident_data"):
-                del st.session_state.case_logs[selected_resident]
-                save_case_logs_to_cache(st.session_state.case_logs)
-                st.success(f"Cleared data for {selected_resident}")
-                st.rerun()
+            pie_data = pd.DataFrame({
+                "Status": ["Completed", "Remaining"],
+                "Cases": [total_cases, remaining]
+            })
+
+            pie_chart = alt.Chart(pie_data).mark_arc(innerRadius=50).encode(
+                theta=alt.Theta("Cases:Q"),
+                color=alt.Color("Status:N", scale=alt.Scale(
+                    domain=["Completed", "Remaining"],
+                    range=["#28a745", "#e0e0e0"]
+                )),
+                tooltip=["Status", "Cases"]
+            ).properties(width=200, height=200, title="Program Total")
+
+            st.altair_chart(pie_chart, use_container_width=True)
+
+        # Bar chart by PGY level
+        bar_chart = alt.Chart(summary_df).mark_bar().encode(
+            x=alt.X("Resident:N", sort=alt.EncodingSortField(field="Progress %", order="descending")),
+            y=alt.Y("Progress %:Q", scale=alt.Scale(domain=[0, 100])),
+            color=alt.Color("PGY:N", scale=alt.Scale(
+                domain=list(PGY_COLORS.keys()),
+                range=list(PGY_COLORS.values())
+            )),
+            tooltip=["Resident", "PGY", "Cases", "Required", "Progress %"]
+        ).properties(height=300, title="Completion Progress by Resident")
+
+        st.altair_chart(bar_chart, use_container_width=True)
+
+        st.markdown("---")
+
+        # Individual resident cards - ALL residents displayed
+        st.markdown("#### 👨‍⚕️ Individual Progress (scroll to view all)")
+
+        for res, pgy in resident_pgy_list:
+            res_data = st.session_state.case_logs[res]
+            progress = get_resident_progress(res_data)
+
+            # Calculate totals from imported data
+            total_current = 0
+            total_minimum = 0
+            for cat_data in progress.values():
+                if isinstance(cat_data, dict):
+                    total_current += cat_data.get("total", 0)
+                    total_minimum += cat_data.get("minimum", 0)
+
+            if total_minimum == 0:
+                total_minimum = ACGME_TOTAL_MINIMUM
+
+            pct = (total_current / total_minimum * 100) if total_minimum > 0 else 0
+            pgy_color = PGY_COLORS.get(pgy, "#666666")
+
+            # Resident header with colored badge
+            st.markdown(f"""
+            <div style="background: linear-gradient(90deg, {pgy_color}22, transparent);
+                        padding: 15px; border-radius: 10px; margin: 10px 0;
+                        border-left: 5px solid {pgy_color};">
+                <h3 style="margin: 0; color: #333;">
+                    <span style="background-color: {pgy_color}; color: white; padding: 3px 10px;
+                                 border-radius: 15px; font-size: 14px; margin-right: 10px;">{pgy}</span>
+                    {res}
+                </h3>
+                <p style="margin: 5px 0 0 0; color: #666;">
+                    <b>{total_current}</b> / {total_minimum} cases ({pct:.0f}% complete)
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Progress bar for overall
+            render_progress_bar(total_current, total_minimum, "Overall Progress", pgy_color)
+
+            # Category breakdown in columns
+            categories = list(progress.keys())
+            if categories:
+                # Create mini pie chart for this resident
+                cat_data_list = []
+                for cat in categories:
+                    if isinstance(progress.get(cat), dict):
+                        cat_progress = progress[cat]
+                        current = cat_progress.get("total", 0)
+                        if current > 0:
+                            cat_data_list.append({"Category": cat[:20], "Cases": current})
+
+                col1, col2 = st.columns([2, 1])
+
+                with col1:
+                    with st.expander("📋 Category Breakdown", expanded=False):
+                        for cat in categories:
+                            if isinstance(progress.get(cat), dict):
+                                cat_progress = progress[cat]
+                                current = cat_progress.get("total", 0)
+                                minimum = cat_progress.get("minimum", 0)
+
+                                if current > 0 or minimum > 0:
+                                    render_progress_bar(current, minimum, cat)
+
+                                    # Subcategories
+                                    subcats = cat_progress.get("subcategories", {})
+                                    for subcat, sub_data in subcats.items():
+                                        if isinstance(sub_data, dict):
+                                            sub_cur = sub_data.get("count", sub_data.get("total", 0))
+                                            sub_min = sub_data.get("minimum", 0)
+                                        else:
+                                            sub_cur = sub_data
+                                            sub_min = 0
+                                        if sub_cur > 0 or sub_min > 0:
+                                            render_progress_bar(sub_cur, sub_min, f"  └─ {subcat}")
+
+                with col2:
+                    if cat_data_list:
+                        mini_pie_df = pd.DataFrame(cat_data_list)
+                        mini_pie = alt.Chart(mini_pie_df).mark_arc().encode(
+                            theta=alt.Theta("Cases:Q"),
+                            color=alt.Color("Category:N", legend=None),
+                            tooltip=["Category", "Cases"]
+                        ).properties(width=150, height=150)
+                        st.altair_chart(mini_pie, use_container_width=True)
+
+            st.markdown("---")
+
+        # Clear all data button
+        if st.button("🗑️ Clear All Case Log Data", key="clear_all_case_logs"):
+            st.session_state.case_logs = {}
+            save_case_logs_to_cache(st.session_state.case_logs)
+            st.success("Cleared all case log data")
+            st.rerun()
 
     else:
-        st.info("No case log data loaded. Drop an ACGME summary export (ResMinimumDefCat) into the watch folder.")
+        st.info("No case log data loaded. Upload an ACGME case log export above.")
 
 # Weekly Schedule tab
 with tabs[5]:
