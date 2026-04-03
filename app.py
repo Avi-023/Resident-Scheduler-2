@@ -1312,10 +1312,10 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
     gold_counts = {"Senior": Counter(), "Junior": Counter(), "Intern": Counter()}
     rg_counts = {"Senior": Counter(), "Junior": Counter(), "Intern": Counter()}
 
-    # Night float tracking
-    st.session_state.setdefault("_nf_counts", Counter())
-    st.session_state.setdefault("_nf_role_counts", defaultdict(Counter))  # name -> {"Senior":x,"Junior":y,"Intern":z}
-    st.session_state.setdefault("_last_nf", {})
+    # Night float tracking — reset each generation to avoid stale data
+    st.session_state["_nf_counts"] = Counter()
+    st.session_state["_nf_role_counts"] = defaultdict(Counter)  # name -> {"Senior":x,"Junior":y,"Intern":z}
+    st.session_state["_last_nf"] = {}
     st.session_state.setdefault("nf_overrides", [])
     nf_counts = st.session_state["_nf_counts"]
     nf_role_counts = st.session_state["_nf_role_counts"]
@@ -1595,35 +1595,8 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
             if getattr(r, "Lock", "").strip().lower() in {"row","true","y","yes"}:
                 locked_rows.add(r.Resident)
 
-        # Chief: H1 PGY-3; H2 PGY-2
-        if bi<6:
-            chief=assign_first([n for n in names if roster_map[n]["PGY"]=="PGY-3" and n not in locked_rows], bi,"Chief")
-            if chief is None:
-                assign_first([n for n in names if roster_map[n]["PGY"]=="PGY-2" and n not in locked_rows], bi,"Chief")
-        else:
-            chief=assign_first([n for n in names if roster_map[n]["PGY"]=="PGY-2" and n not in locked_rows], bi,"Chief")
-            if chief is None:
-                assign_first([n for n in names if roster_map[n]["PGY"]=="PGY-3" and n not in locked_rows], bi,"Chief")
-
-        # ICU (HARD): H1 PGY-2 only; H2 PGY-1 only; fair distribution; must be covered
-        if bi < 6:
-            elig = [n for n in names if roster_map[n]["PGY"]=="PGY-2" and pd.isna(schedule_df.loc[n, hdr])
-                    and not is_unavailable(n, "PGY-2", "ICU", bi) and n not in locked_rows
-                    and not would_exceed_run(n, bi, "ICU")]
-            if elig:
-                pick = sorted(elig, key=lambda n:(Counter(schedule_df.loc[n]== "ICU")[True], repeat_penalty(n, bi, "ICU"), n))[0]
-                schedule_df.loc[pick, hdr] = "ICU"
-                log_reason(reasons, pick, hdr, "ICU (H1 PGY-2 only) fair distribution (avoid consecutive)")
-        else:
-            elig = [n for n in names if roster_map[n]["PGY"]=="PGY-1" and pd.isna(schedule_df.loc[n, hdr])
-                    and not is_unavailable(n, "PGY-1", "ICU", bi) and n not in locked_rows
-                    and not would_exceed_run(n, bi, "ICU")]
-            if elig:
-                pick = sorted(elig, key=lambda n:(Counter(schedule_df.loc[n]== "ICU")[True], repeat_penalty(n, bi, "ICU"), n))[0]
-                schedule_df.loc[pick, hdr] = "ICU"
-                log_reason(reasons, pick, hdr, "ICU (H2 PGY-1 only) fair distribution (avoid consecutive)")
-
         # Night Float (HARD): must exist every block; Sr + Jr + Intern; ≥1-block gap preferred; avoid PGY-5 senior in last block
+        # Assigned FIRST to guarantee coverage — Chief and ICU draw from the remaining pool.
         def _pick_night_role(role: str, relax_gap: bool, avoid_pgy5_last: bool=False):
             pool = [n for n in names if pd.isna(schedule_df.loc[n, hdr]) and n not in locked_rows]
             pool = [n for n in pool if not is_unavailable(n, roster_map[n]["PGY"], "Nights", bi)
@@ -1664,6 +1637,34 @@ def auto_generate_yearly(roster_df: pd.DataFrame, start_date: date, constraints:
                 st.session_state["_last_nf"][pick] = bi
                 st.session_state["_nf_role_counts"][pick][role] += 1
                 log_reason(reasons, pick, hdr, f"Nights as {role} (role-fair; spacing respected; avoid consecutive)")
+
+        # Chief: H1 PGY-3; H2 PGY-2
+        if bi<6:
+            chief=assign_first([n for n in names if roster_map[n]["PGY"]=="PGY-3" and n not in locked_rows], bi,"Chief")
+            if chief is None:
+                assign_first([n for n in names if roster_map[n]["PGY"]=="PGY-2" and n not in locked_rows], bi,"Chief")
+        else:
+            chief=assign_first([n for n in names if roster_map[n]["PGY"]=="PGY-2" and n not in locked_rows], bi,"Chief")
+            if chief is None:
+                assign_first([n for n in names if roster_map[n]["PGY"]=="PGY-3" and n not in locked_rows], bi,"Chief")
+
+        # ICU (HARD): H1 PGY-2 only; H2 PGY-1 only; fair distribution; must be covered
+        if bi < 6:
+            elig = [n for n in names if roster_map[n]["PGY"]=="PGY-2" and pd.isna(schedule_df.loc[n, hdr])
+                    and not is_unavailable(n, "PGY-2", "ICU", bi) and n not in locked_rows
+                    and not would_exceed_run(n, bi, "ICU")]
+            if elig:
+                pick = sorted(elig, key=lambda n:(Counter(schedule_df.loc[n]== "ICU")[True], repeat_penalty(n, bi, "ICU"), n))[0]
+                schedule_df.loc[pick, hdr] = "ICU"
+                log_reason(reasons, pick, hdr, "ICU (H1 PGY-2 only) fair distribution (avoid consecutive)")
+        else:
+            elig = [n for n in names if roster_map[n]["PGY"]=="PGY-1" and pd.isna(schedule_df.loc[n, hdr])
+                    and not is_unavailable(n, "PGY-1", "ICU", bi) and n not in locked_rows
+                    and not would_exceed_run(n, bi, "ICU")]
+            if elig:
+                pick = sorted(elig, key=lambda n:(Counter(schedule_df.loc[n]== "ICU")[True], repeat_penalty(n, bi, "ICU"), n))[0]
+                schedule_df.loc[pick, hdr] = "ICU"
+                log_reason(reasons, pick, hdr, "ICU (H2 PGY-1 only) fair distribution (avoid consecutive)")
 
         # Floor (HARD): PGY-1 only - prefer interns with MORE Vascular so those with fewer are available for Vascular
         floor_interns = [n for n in names if roster_map[n]["PGY"]=="PGY-1"
