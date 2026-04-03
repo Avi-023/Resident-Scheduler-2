@@ -4050,11 +4050,13 @@ Supports PDF and Excel formats.
         col1, col2 = st.columns([2, 1])
 
         with col1:
-            st.dataframe(
-                summary_df.style.background_gradient(subset=['Progress %'], cmap='RdYlGn', vmin=0, vmax=100),
-                use_container_width=True,
-                hide_index=True
-            )
+            # Display summary table
+            try:
+                styled_df = summary_df.style.background_gradient(subset=['Progress %'], cmap='RdYlGn', vmin=0, vmax=100)
+                st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            except ImportError:
+                # Fallback if matplotlib not available
+                st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
         with col2:
             # Pie chart showing overall program progress
