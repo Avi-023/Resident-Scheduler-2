@@ -546,6 +546,11 @@ DAILY_OPTIONS = [
     "Superservice",
     "F/Su",
     "Sa",
+    "Fr",
+    "Sun",
+    "KTENS",
+    "International",
+    "Extra Help",
 ]
 
 # --------------------------
@@ -3529,40 +3534,8 @@ with tabs[2]:
         st.info("No schedule available yet. Generate a schedule first.")
     else:
         checks = compute_checks(base_yearly, st.session_state.get("dailies", {}), roster_df_ss, constraints, ay_start)
-        c1,c2,c3 = st.columns([1.1,1.25,1.25])
-        with c1:
-            st.markdown("**Summary (Severity × Code)**")
-            st.dataframe(checks["summary"], use_container_width=True, hide_index=True)
-        with c2:
-            st.markdown("**Per-block coverage**")
-            st.dataframe(checks["coverage"], use_container_width=True, hide_index=True)
-        with c3:
-            st.markdown("**Call-load by resident**")
-            st.dataframe(checks["call"], use_container_width=True, hide_index=True)
 
-        # Compliance checks (4 days off, vacation weeks, personal days)
-        st.markdown("**Compliance Checks (Days Off / Vacation / Personal Days)**")
-        if "compliance" in checks and not checks["compliance"].empty:
-            st.dataframe(checks["compliance"], use_container_width=True, hide_index=True)
-        else:
-            st.info("No compliance data available.")
-
-        st.markdown("**Issues (detailed)**"); st.dataframe(checks["issues"], use_container_width=True, hide_index=True)
-        st.markdown("**Per-resident rotation counts (PGY-sorted)**"); st.dataframe(checks["rot_counts"], use_container_width=True, hide_index=True)
-        st.markdown("**Per-PGY coverage per block**"); st.dataframe(checks["pgy_coverage"], use_container_width=True, hide_index=True)
-        st.markdown("**Special blocks per resident**"); st.dataframe(checks["special_counts"], use_container_width=True, hide_index=True)
-        st.markdown("**Service totals across the year**"); st.dataframe(checks["svc_variance"], use_container_width=True, hide_index=True)
-        if "reasons" in checks and not checks["reasons"].empty:
-            st.markdown("**Why these assignments?**"); st.dataframe(checks["reasons"], use_container_width=True, hide_index=True)
-        if "call_overrides" in checks:
-            st.markdown("**Weekend call overrides (forced for coverage)**")
-            st.dataframe(checks["call_overrides"], use_container_width=True, hide_index=True)
-        if "nf_overrides" in checks:
-            st.markdown("**Night Float overrides & warnings**")
-            st.dataframe(checks["nf_overrides"], use_container_width=True, hide_index=True)
-
-        # Fairness Charts
-        st.markdown("---")
+        # Fairness Charts - MOVED TO TOP
         st.markdown("#### Fairness Charts")
         st.caption("All charts sorted by PGY level (PGY-5 first, then PGY-4, PGY-3, PGY-2, PGY-1).")
 
@@ -3637,6 +3610,66 @@ with tabs[2]:
                 y=alt.Y(f"{rotation}:Q", title="Blocks")
             ).properties(height=250)
             st.altair_chart(single_chart, use_container_width=True)
+
+        # Summary, Coverage, Call-load, and other tables
+        st.markdown("---")
+        st.markdown("#### Summary (Severity × Code)")
+        if not checks["summary"].empty:
+            st.dataframe(checks["summary"], use_container_width=True, hide_index=True)
+        else:
+            st.success("No issues found!")
+
+        st.markdown("#### Per-block Coverage")
+        st.dataframe(checks["coverage"], use_container_width=True, hide_index=True)
+
+        st.markdown("#### Call-load by Resident")
+        st.dataframe(checks["call"], use_container_width=True, hide_index=True)
+
+        # Compliance Checks
+        if "compliance" in checks and not checks["compliance"].empty:
+            st.markdown("#### Compliance Checks")
+            st.caption("4+ days off per block, vacation weeks, personal days")
+            try:
+                styled_compliance = checks["compliance"].style.background_gradient(
+                    subset=[c for c in checks["compliance"].columns if c not in ["Resident", "PGY"]],
+                    cmap="RdYlGn"
+                )
+                st.dataframe(styled_compliance, use_container_width=True, hide_index=True)
+            except Exception:
+                st.dataframe(checks["compliance"], use_container_width=True, hide_index=True)
+
+        st.markdown("#### Issues")
+        if not checks["issues"].empty:
+            st.dataframe(checks["issues"], use_container_width=True, hide_index=True)
+        else:
+            st.success("No issues found!")
+
+        st.markdown("#### Per-resident Rotation Counts")
+        st.dataframe(checks["rot_counts"], use_container_width=True, hide_index=True)
+
+        st.markdown("#### Per-PGY Coverage")
+        st.dataframe(checks["pgy_coverage"], use_container_width=True, hide_index=True)
+
+        st.markdown("#### Special Blocks")
+        st.dataframe(checks["special_counts"], use_container_width=True, hide_index=True)
+
+        st.markdown("#### Service Totals")
+        st.dataframe(checks["svc_variance"], use_container_width=True, hide_index=True)
+
+        # Why these assignments
+        if "reasons" in checks and not checks["reasons"].empty:
+            st.markdown("#### Why These Assignments")
+            st.dataframe(checks["reasons"], use_container_width=True, hide_index=True)
+
+        # Call overrides
+        if "call_overrides" in checks:
+            st.markdown("#### Call Overrides")
+            st.dataframe(checks["call_overrides"], use_container_width=True, hide_index=True)
+
+        # NF overrides
+        if "nf_overrides" in checks:
+            st.markdown("#### Night Float Overrides")
+            st.dataframe(checks["nf_overrides"], use_container_width=True, hide_index=True)
 
 # Export tab
 with tabs[3]:
