@@ -4197,16 +4197,22 @@ Supports PDF and Excel formats.
             res_data = st.session_state.case_logs[res]
             progress = get_resident_progress(res_data)
 
+            # Use "Total Major Cases" as the overall required count (not sum of all categories,
+            # since subcategories count toward parent categories and cases count in multiple categories)
+            total_minimum = ACGME_TOTAL_MINIMUM
             total_current = 0
-            total_minimum = 0
-            for cat_data in progress.values():
+            for cat_name, cat_data in progress.items():
                 if isinstance(cat_data, dict):
-                    total_current += cat_data.get("total", 0)
-                    total_minimum += cat_data.get("minimum", 0)
+                    if 'total major' in cat_name.lower():
+                        total_current = cat_data.get("total", 0)
+                        total_minimum = cat_data.get("minimum", ACGME_TOTAL_MINIMUM)
+                        break
 
-            # Use the imported minimum or ACGME default
-            if total_minimum == 0:
-                total_minimum = ACGME_TOTAL_MINIMUM
+            # Fallback: if no "Total Major Cases" row, sum all categories
+            if total_current == 0:
+                for cat_data in progress.values():
+                    if isinstance(cat_data, dict):
+                        total_current += cat_data.get("total", 0)
 
             pct = (total_current / total_minimum * 100) if total_minimum > 0 else 0
 
@@ -4277,16 +4283,20 @@ Supports PDF and Excel formats.
             res_data = st.session_state.case_logs[res]
             progress = get_resident_progress(res_data)
 
-            # Calculate totals from imported data
+            # Use "Total Major Cases" as the overall required count
+            total_minimum = ACGME_TOTAL_MINIMUM
             total_current = 0
-            total_minimum = 0
-            for cat_data in progress.values():
+            for cat_name, cat_data in progress.items():
                 if isinstance(cat_data, dict):
-                    total_current += cat_data.get("total", 0)
-                    total_minimum += cat_data.get("minimum", 0)
+                    if 'total major' in cat_name.lower():
+                        total_current = cat_data.get("total", 0)
+                        total_minimum = cat_data.get("minimum", ACGME_TOTAL_MINIMUM)
+                        break
 
-            if total_minimum == 0:
-                total_minimum = ACGME_TOTAL_MINIMUM
+            if total_current == 0:
+                for cat_data in progress.values():
+                    if isinstance(cat_data, dict):
+                        total_current += cat_data.get("total", 0)
 
             pct = (total_current / total_minimum * 100) if total_minimum > 0 else 0
             pgy_color = PGY_COLORS.get(pgy, "#666666")
