@@ -4375,7 +4375,27 @@ Supports PDF and Excel formats.
 
                 with col1:
                     with st.expander("📋 Category Breakdown", expanded=False):
+                        # ACGME subcategory → parent mapping for display grouping
+                        _SUB_MAP = {
+                            "Mastectomy": "Breast", "Axilla": "Breast",
+                            "Esophagus": "Alimentary Tract", "Stomach": "Alimentary Tract",
+                            "Small Intestine": "Alimentary Tract", "Large Intestine": "Alimentary Tract",
+                            "Appendix": "Alimentary Tract", "Anorectal": "Alimentary Tract",
+                            "Biliary": "Abdominal", "Hernia": "Abdominal",
+                            "Liver": "Abdominal", "Pancreas": "Abdominal",
+                            "Access": "Vascular",
+                            "Anastomosis, Repair, Exposure, or Endarterectomy": "Vascular",
+                            "Thyroid or parathyroid": "Endocrine",
+                            "Team Leader Resuscitation": "Non-Operative Trauma",
+                            "Open Thoracotomy": "Thoracic",
+                            "Upper Endoscopy": "Endoscopy", "Colonoscopy": "Endoscopy",
+                        }
+                        # Identify which categories are subcategories (whether nested or flat)
+                        subcategory_names = set(_SUB_MAP.keys())
+
                         for cat in categories:
+                            if cat in subcategory_names:
+                                continue  # Will be rendered under parent
                             if isinstance(progress.get(cat), dict):
                                 cat_progress = progress[cat]
                                 current = cat_progress.get("total", 0)
@@ -4384,7 +4404,7 @@ Supports PDF and Excel formats.
                                 if current > 0 or minimum > 0:
                                     render_progress_bar(current, minimum, cat)
 
-                                    # Subcategories
+                                    # Render nested subcategories (from structured data)
                                     subcats = cat_progress.get("subcategories", {})
                                     for subcat, sub_data in subcats.items():
                                         if isinstance(sub_data, dict):
@@ -4395,6 +4415,16 @@ Supports PDF and Excel formats.
                                             sub_min = 0
                                         if sub_cur > 0 or sub_min > 0:
                                             render_progress_bar(sub_cur, sub_min, subcat, is_subcategory=True)
+
+                                    # Render flat subcategories (from old/unstructured data)
+                                    for sub_name, parent in _SUB_MAP.items():
+                                        if parent == cat and sub_name in progress and sub_name not in subcats:
+                                            sub_progress = progress[sub_name]
+                                            if isinstance(sub_progress, dict):
+                                                sub_cur = sub_progress.get("total", 0)
+                                                sub_min = sub_progress.get("minimum", 0)
+                                                if sub_cur > 0 or sub_min > 0:
+                                                    render_progress_bar(sub_cur, sub_min, sub_name, is_subcategory=True)
 
                 with col2:
                     if cat_data_list:
