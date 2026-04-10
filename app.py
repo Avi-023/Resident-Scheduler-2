@@ -806,16 +806,36 @@ def parse_acgme_summary_report(df):
     for res_col in resident_cols:
         result[res_col] = {}
 
+    # ACGME subcategory → parent mapping (subcategories count toward parent)
+    SUBCATEGORY_MAP = {
+        "Mastectomy": "Breast",
+        "Axilla": "Breast",
+        "Esophagus": "Alimentary Tract",
+        "Stomach": "Alimentary Tract",
+        "Small Intestine": "Alimentary Tract",
+        "Large Intestine": "Alimentary Tract",
+        "Appendix": "Alimentary Tract",
+        "Anorectal": "Alimentary Tract",
+        "Biliary": "Abdominal",
+        "Hernia": "Abdominal",
+        "Liver": "Abdominal",
+        "Pancreas": "Abdominal",
+        "Access": "Vascular",
+        "Anastomosis, Repair, Exposure, or Endarterectomy": "Vascular",
+        "Thyroid or parathyroid": "Endocrine",
+        "Team Leader Resuscitation": "Non-Operative Trauma",
+        "Open Thoracotomy": "Thoracic",
+        "Upper Endoscopy": "Endoscopy",
+        "Colonoscopy": "Endoscopy",
+    }
+
     # Parse each row
-    current_category = None
     for _, row in df.iterrows():
         cat_value = str(row.get(cat_col, "")).strip()
 
         if not cat_value or cat_value.lower() in ['nan', 'none', '']:
             continue
 
-        # Detect if this is a subcategory (indented or has specific markers)
-        is_subcategory = cat_value.startswith('    ') or cat_value.startswith('\t')
         cat_name = cat_value.strip()
 
         # Skip generic total rows (but keep "Total Major Cases" for dashboard)
@@ -831,6 +851,9 @@ def parse_acgme_summary_report(df):
             except:
                 pass
 
+        # Determine if this is a subcategory
+        parent = SUBCATEGORY_MAP.get(cat_name)
+
         # Process each resident's value
         for res_col in resident_cols:
             try:
@@ -839,17 +862,16 @@ def parse_acgme_summary_report(df):
             except:
                 count = 0
 
-            if is_subcategory and current_category:
-                # Add as subcategory under current category
-                if current_category not in result[res_col]:
-                    result[res_col][current_category] = {"total": 0, "minimum": 0, "subcategories": {}}
-                result[res_col][current_category]["subcategories"][cat_name] = {
+            if parent:
+                # Add as subcategory under parent
+                if parent not in result[res_col]:
+                    result[res_col][parent] = {"total": 0, "minimum": 0, "subcategories": {}}
+                result[res_col][parent]["subcategories"][cat_name] = {
                     "count": count,
                     "minimum": minimum
                 }
             else:
                 # Main category
-                current_category = cat_name
                 if cat_name not in result[res_col]:
                     result[res_col][cat_name] = {"total": 0, "minimum": minimum, "subcategories": {}}
                 result[res_col][cat_name]["total"] = count
