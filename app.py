@@ -3997,11 +3997,12 @@ Supports PDF and Excel formats.
                 if df is not None and not df.empty:
                     st.success(f"✅ Loaded file with {len(df)} rows")
 
-                    # Show raw preview
+                    # Show raw preview (drop blank/Unnamed columns)
+                    preview_df = df.drop(columns=[c for c in df.columns if str(c).startswith('Unnamed')], errors='ignore')
                     st.markdown("**Raw Data Preview (first 10 rows):**")
-                    st.dataframe(df.head(10), use_container_width=True)
+                    st.dataframe(preview_df.head(10), use_container_width=True)
 
-                    st.markdown(f"**Columns found:** {', '.join(df.columns.tolist())}")
+                    st.markdown(f"**Columns found:** {', '.join(preview_df.columns.tolist())}")
 
                     # Check if it's summary format — import all sheets at once
                     if is_summary_format(df):
