@@ -1,5 +1,5 @@
 # app.py
-import io, json, re, math, random, time, pickle, os
+import io, json, re, math, random, time, pickle, os, difflib
 from datetime import date, timedelta
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -3777,17 +3777,48 @@ with tabs[4]:
                 break
         return (has_category or has_minimum) and has_text_categories
 
+    def fuzzy_match_resident(name, roster_names, threshold=0.75):
+        """Match a name from an uploaded file to the closest roster name.
+        Returns the roster name if similarity >= threshold, otherwise the original name."""
+        if not roster_names:
+            return name
+        best_match = None
+        best_score = 0.0
+        name_lower = name.lower().strip()
+        for roster_name in roster_names:
+            roster_lower = roster_name.lower().strip()
+            if name_lower == roster_lower:
+                return roster_name
+            score = difflib.SequenceMatcher(None, name_lower, roster_lower).ratio()
+            if score > best_score:
+                best_score = score
+                best_match = roster_name
+        if best_score >= threshold and best_match:
+            return best_match
+        return name
+
+    def get_roster_names():
+        """Get current resident names from the roster."""
+        if "roster_table" in st.session_state and st.session_state.roster_table is not None:
+            return st.session_state.roster_table["Resident"].dropna().astype(str).str.strip().tolist()
+        return []
+
     def import_summary_file(df, filename):
         """Import an ACGME summary report file."""
         parsed = parse_acgme_summary_report(df)
         imported_residents = []
+        roster_names = get_roster_names()
         for resident, categories in parsed.items():
             if resident and categories:
                 # Clean resident name
                 res_name = str(resident).strip()
                 if res_name.lower() not in ['minimum', 'min', 'category', 'nan', '']:
-                    st.session_state.case_logs[res_name] = categories
-                    imported_residents.append(res_name)
+                    # Fuzzy match to roster name
+                    matched_name = fuzzy_match_resident(res_name, roster_names)
+                    if matched_name != res_name:
+                        st.toast(f"Matched '{res_name}' → '{matched_name}'")
+                    st.session_state.case_logs[matched_name] = categories
+                    imported_residents.append(matched_name)
         return imported_residents
 
     def process_imported_files(new_imports, source_name):
@@ -3980,6 +4011,8 @@ Supports PDF and Excel formats.
                                 st.error("Please select at least one resident column")
                             else:
                                 # Parse manually with selected columns
+                                roster_names = get_roster_names()
+                                matched_names = []
                                 for res_col in resident_cols:
                                     res_data = {}
                                     for _, row in df.iterrows():
@@ -4008,10 +4041,14 @@ Supports PDF and Excel formats.
                                             pass
 
                                     if res_data:
-                                        st.session_state.case_logs[res_col] = res_data
+                                        matched_name = fuzzy_match_resident(res_col, roster_names)
+                                        if matched_name != res_col:
+                                            st.toast(f"Matched '{res_col}' → '{matched_name}'")
+                                        st.session_state.case_logs[matched_name] = res_data
+                                        matched_names.append(matched_name)
 
                                 save_case_logs_to_cache(st.session_state.case_logs)
-                                st.success(f"✅ Imported data for: {', '.join(resident_cols)}")
+                                st.success(f"✅ Imported data for: {', '.join(matched_names)}")
                                 st.rerun()
                                 resident_df = df[df[resident_col] == resident].copy()
                                 if resident not in st.session_state.case_logs:
