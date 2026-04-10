@@ -827,6 +827,8 @@ def parse_acgme_summary_report(df):
         "Open Thoracotomy": "Thoracic",
         "Upper Endoscopy": "Endoscopy",
         "Colonoscopy": "Endoscopy",
+        "Surgeon Chief": "Total Major Cases",
+        "Teaching Asst.": "Total Major Cases",
     }
 
     # Parse each row
@@ -4389,6 +4391,8 @@ Supports PDF and Excel formats.
                             "Team Leader Resuscitation": "Non-Operative Trauma",
                             "Open Thoracotomy": "Thoracic",
                             "Upper Endoscopy": "Endoscopy", "Colonoscopy": "Endoscopy",
+                            "Surgeon Chief": "Total Major Cases",
+                            "Teaching Asst.": "Total Major Cases",
                         }
                         # Identify which categories are subcategories (whether nested or flat)
                         subcategory_names = set(_SUB_MAP.keys())
