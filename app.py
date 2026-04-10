@@ -4111,7 +4111,7 @@ Supports PDF and Excel formats.
         st.markdown("---")
         st.markdown("### 📈 Case Log Progress Dashboard")
 
-        def render_progress_bar(current, minimum, label, color=None):
+        def render_progress_bar(current, minimum, label, color=None, is_subcategory=False):
             """Render a progress bar with color coding."""
             try:
                 current = int(float(current)) if current else 0
@@ -4128,17 +4128,30 @@ Supports PDF and Excel formats.
             if color is None:
                 color = "#28a745" if pct >= 100 else "#ffc107" if pct >= 50 else "#dc3545"
 
-            st.markdown(f"""
-            <div style="margin-bottom: 8px;">
-                <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
-                    <span>{label}</span>
-                    <span><b>{current}</b> / {minimum}</span>
+            if is_subcategory:
+                st.markdown(f"""
+                <div style="margin-bottom: 4px; margin-left: 24px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 1px;">
+                        <span style="font-size: 13px; color: #666;">└─ {label}</span>
+                        <span style="font-size: 13px; color: #666;">{current} / {minimum}</span>
+                    </div>
+                    <div style="background-color: #e0e0e0; border-radius: 3px; height: 12px;">
+                        <div style="background-color: {color}; width: {pct}%; height: 100%; border-radius: 3px; opacity: 0.7;"></div>
+                    </div>
                 </div>
-                <div style="background-color: #e0e0e0; border-radius: 4px; height: 20px;">
-                    <div style="background-color: {color}; width: {pct}%; height: 100%; border-radius: 4px;"></div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div style="margin-bottom: 8px; margin-top: 10px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                        <span style="font-weight: 600;">{label}</span>
+                        <span><b>{current}</b> / {minimum}</span>
+                    </div>
+                    <div style="background-color: #e0e0e0; border-radius: 4px; height: 20px;">
+                        <div style="background-color: {color}; width: {pct}%; height: 100%; border-radius: 4px;"></div>
+                    </div>
                 </div>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
 
         def get_resident_progress(res_data):
             """Get progress data from either summary dict or DataFrame."""
@@ -4359,7 +4372,7 @@ Supports PDF and Excel formats.
                                             sub_cur = sub_data
                                             sub_min = 0
                                         if sub_cur > 0 or sub_min > 0:
-                                            render_progress_bar(sub_cur, sub_min, f"  └─ {subcat}")
+                                            render_progress_bar(sub_cur, sub_min, subcat, is_subcategory=True)
 
                 with col2:
                     if cat_data_list:
