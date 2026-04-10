@@ -744,13 +744,12 @@ def parse_acgme_summary_report(df):
     # Clean column names
     df.columns = df.columns.str.strip()
 
-    # Find the category column (usually first column or "Category")
+    # Find the category column (prioritize column named "Category", then first column)
     cat_col = None
     for col in df.columns:
-        if 'category' in col.lower() or col == df.columns[0]:
+        if 'category' in col.lower():
             cat_col = col
             break
-
     if cat_col is None:
         cat_col = df.columns[0]
 
@@ -3769,9 +3768,13 @@ with tabs[4]:
         # Summary format typically has: Category, Minimum, and resident name columns
         has_category = any('category' in c or 'defined' in c for c in cols_lower)
         has_minimum = any('minimum' in c or 'min' in c for c in cols_lower)
-        # Check if first column looks like category names (not dates or CPT codes)
-        first_col_vals = df.iloc[:, 0].dropna().astype(str).head(5)
-        has_text_categories = any(len(v) > 5 and not v.replace('.', '').isdigit() for v in first_col_vals)
+        # Check first few columns for text category values (file may have blank leading columns)
+        has_text_categories = False
+        for i in range(min(5, len(df.columns))):
+            col_vals = df.iloc[:, i].dropna().astype(str).head(5)
+            if any(len(v) > 5 and not v.replace('.', '').isdigit() for v in col_vals):
+                has_text_categories = True
+                break
         return (has_category or has_minimum) and has_text_categories
 
     def import_summary_file(df, filename):
@@ -3917,9 +3920,19 @@ Supports PDF and Excel formats.
                     st.markdown("**Raw Data Preview (first 10 rows):**")
                     st.dataframe(df.head(10), use_container_width=True)
 
+                    # Auto-detect header row: find row containing both 'category' and 'minimum'
+                    auto_header_row = 0
+                    for i in range(min(20, len(df))):
+                        row_vals_lower = [str(v).lower().strip() for v in df.iloc[i] if pd.notna(v) and str(v).strip()]
+                        if 'category' in row_vals_lower and 'minimum' in row_vals_lower:
+                            auto_header_row = i
+                            break
+                        elif 'category' in row_vals_lower:
+                            auto_header_row = i
+
                     # Let user select header row
                     header_row = st.number_input("Which row contains the column headers? (0 = first row)",
-                                                  min_value=0, max_value=min(10, len(df)-1), value=0, key="header_row_select")
+                                                  min_value=0, max_value=min(20, len(df)-1), value=auto_header_row, key="header_row_select")
 
                     # Re-read with correct header
                     uploaded_file.seek(0)
