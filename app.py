@@ -1,5 +1,5 @@
 # app.py
-import io, json, re, math, random, time, pickle, os
+import io, json, re, math, random, time, pickle, os, difflib
 from datetime import date, timedelta
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -15,6 +15,7 @@ import altair as alt
 SCHEDULE_CACHE_FILE = Path(__file__).parent / ".schedule_cache.pkl"
 CASE_LOG_IMPORT_FOLDER = Path(__file__).parent / "imports" / "case_logs"
 CASE_LOG_CACHE_FILE = Path(__file__).parent / ".case_logs_cache.pkl"
+ROSTER_CACHE_FILE = Path(__file__).parent / ".roster_cache.pkl"
 
 def save_case_logs_to_cache(case_logs: dict):
     """Save case logs to file for persistence."""
@@ -34,6 +35,27 @@ def load_case_logs_from_cache():
     except Exception:
         pass
     return {}
+
+def save_roster_to_cache(roster_df):
+    """Save roster to file for persistence across sessions."""
+    try:
+        with open(ROSTER_CACHE_FILE, "wb") as f:
+            pickle.dump({"roster_df": roster_df, "saved_at": time.time()}, f)
+    except Exception:
+        pass
+
+def load_roster_from_cache():
+    """Load roster from cache file. Returns None if no cache exists."""
+    try:
+        if ROSTER_CACHE_FILE.exists():
+            with open(ROSTER_CACHE_FILE, "rb") as f:
+                data = pickle.load(f)
+                roster = data.get("roster_df")
+                if roster is not None and not roster.empty:
+                    return roster
+    except Exception:
+        pass
+    return None
 
 def scan_import_folder_for_case_logs():
     """Scan the import folder for new case log files and import them."""
@@ -744,13 +766,12 @@ def parse_acgme_summary_report(df):
     # Clean column names
     df.columns = df.columns.str.strip()
 
-    # Find the category column (usually first column or "Category")
+    # Find the category column (prioritize column named "Category", then first column)
     cat_col = None
     for col in df.columns:
-        if 'category' in col.lower() or col == df.columns[0]:
+        if 'category' in col.lower():
             cat_col = col
             break
-
     if cat_col is None:
         cat_col = df.columns[0]
 
@@ -3157,15 +3178,19 @@ _default_roster=pd.DataFrame([
     ["Zoe Wecht","PGY-2","N","Y","","","",""],
     ["Jessica Marks","PGY-2","N","Y","","","",""],
     ["Jacob Allenabaugh","PGY-2","N","Y","","","",""],
+    ["Masum Rahman","PGY-1","N","Y","","","",""],
     ["Intern 1","PGY-1","N","Y","","","",""],
     ["Intern 2","PGY-1","N","Y","","","",""],
-    ["Intern 3","PGY-1","N","Y","","","",""],
     ["Intern 4 (Prelim)","PGY-1","Y","Y","","","",""],
     ["Intern 5 (Prelim)","PGY-1","Y","Y","","","",""],
 ], columns=["Resident","PGY","Prelim","Include?","Notes","Vacation 1","Vacation 2","Vacation 3"])
 
 if "roster_table" not in st.session_state:
-    st.session_state.roster_table = _default_roster.copy()
+    _cached_roster = load_roster_from_cache()
+    if _cached_roster is not None:
+        st.session_state.roster_table = _cached_roster
+    else:
+        st.session_state.roster_table = _default_roster.copy()
 
 # Load saved schedule from cache on startup
 if "schedule_df" not in st.session_state:
@@ -3333,6 +3358,7 @@ with tabs[0]:
     with st.expander("Roster (editable)", expanded=not has_schedule):
         roster = show_table(st.session_state.roster_table, "roster_editor", editable=True, hide_index=True, index_name_hint="Resident")
         st.session_state.roster_table = roster.copy()
+        save_roster_to_cache(roster)
 
         st.checkbox("Auto-assign weekend call after edits", True, key="auto_call")
         st.checkbox("Auto-fill vacation dates from Roster columns", True, key="auto_vacation",
@@ -3769,22 +3795,57 @@ with tabs[4]:
         # Summary format typically has: Category, Minimum, and resident name columns
         has_category = any('category' in c or 'defined' in c for c in cols_lower)
         has_minimum = any('minimum' in c or 'min' in c for c in cols_lower)
-        # Check if first column looks like category names (not dates or CPT codes)
-        first_col_vals = df.iloc[:, 0].dropna().astype(str).head(5)
-        has_text_categories = any(len(v) > 5 and not v.replace('.', '').isdigit() for v in first_col_vals)
+        # Check first few columns for text category values (file may have blank leading columns)
+        has_text_categories = False
+        for i in range(min(5, len(df.columns))):
+            col_vals = df.iloc[:, i].dropna().astype(str).head(5)
+            if any(len(v) > 5 and not v.replace('.', '').isdigit() for v in col_vals):
+                has_text_categories = True
+                break
         return (has_category or has_minimum) and has_text_categories
+
+    def fuzzy_match_resident(name, roster_names, threshold=0.75):
+        """Match a name from an uploaded file to the closest roster name.
+        Returns the roster name if similarity >= threshold, otherwise the original name."""
+        if not roster_names:
+            return name
+        best_match = None
+        best_score = 0.0
+        name_lower = name.lower().strip()
+        for roster_name in roster_names:
+            roster_lower = roster_name.lower().strip()
+            if name_lower == roster_lower:
+                return roster_name
+            score = difflib.SequenceMatcher(None, name_lower, roster_lower).ratio()
+            if score > best_score:
+                best_score = score
+                best_match = roster_name
+        if best_score >= threshold and best_match:
+            return best_match
+        return name
+
+    def get_roster_names():
+        """Get current resident names from the roster."""
+        if "roster_table" in st.session_state and st.session_state.roster_table is not None:
+            return st.session_state.roster_table["Resident"].dropna().astype(str).str.strip().tolist()
+        return []
 
     def import_summary_file(df, filename):
         """Import an ACGME summary report file."""
         parsed = parse_acgme_summary_report(df)
         imported_residents = []
+        roster_names = get_roster_names()
         for resident, categories in parsed.items():
             if resident and categories:
                 # Clean resident name
                 res_name = str(resident).strip()
                 if res_name.lower() not in ['minimum', 'min', 'category', 'nan', '']:
-                    st.session_state.case_logs[res_name] = categories
-                    imported_residents.append(res_name)
+                    # Fuzzy match to roster name
+                    matched_name = fuzzy_match_resident(res_name, roster_names)
+                    if matched_name != res_name:
+                        st.toast(f"Matched '{res_name}' → '{matched_name}'")
+                    st.session_state.case_logs[matched_name] = categories
+                    imported_residents.append(matched_name)
         return imported_residents
 
     def process_imported_files(new_imports, source_name):
@@ -3917,9 +3978,19 @@ Supports PDF and Excel formats.
                     st.markdown("**Raw Data Preview (first 10 rows):**")
                     st.dataframe(df.head(10), use_container_width=True)
 
+                    # Auto-detect header row: find row containing both 'category' and 'minimum'
+                    auto_header_row = 0
+                    for i in range(min(20, len(df))):
+                        row_vals_lower = [str(v).lower().strip() for v in df.iloc[i] if pd.notna(v) and str(v).strip()]
+                        if 'category' in row_vals_lower and 'minimum' in row_vals_lower:
+                            auto_header_row = i
+                            break
+                        elif 'category' in row_vals_lower:
+                            auto_header_row = i
+
                     # Let user select header row
                     header_row = st.number_input("Which row contains the column headers? (0 = first row)",
-                                                  min_value=0, max_value=min(10, len(df)-1), value=0, key="header_row_select")
+                                                  min_value=0, max_value=min(20, len(df)-1), value=auto_header_row, key="header_row_select")
 
                     # Re-read with correct header
                     uploaded_file.seek(0)
@@ -3967,6 +4038,8 @@ Supports PDF and Excel formats.
                                 st.error("Please select at least one resident column")
                             else:
                                 # Parse manually with selected columns
+                                roster_names = get_roster_names()
+                                matched_names = []
                                 for res_col in resident_cols:
                                     res_data = {}
                                     for _, row in df.iterrows():
@@ -3995,10 +4068,14 @@ Supports PDF and Excel formats.
                                             pass
 
                                     if res_data:
-                                        st.session_state.case_logs[res_col] = res_data
+                                        matched_name = fuzzy_match_resident(res_col, roster_names)
+                                        if matched_name != res_col:
+                                            st.toast(f"Matched '{res_col}' → '{matched_name}'")
+                                        st.session_state.case_logs[matched_name] = res_data
+                                        matched_names.append(matched_name)
 
                                 save_case_logs_to_cache(st.session_state.case_logs)
-                                st.success(f"✅ Imported data for: {', '.join(resident_cols)}")
+                                st.success(f"✅ Imported data for: {', '.join(matched_names)}")
                                 st.rerun()
                                 resident_df = df[df[resident_col] == resident].copy()
                                 if resident not in st.session_state.case_logs:
