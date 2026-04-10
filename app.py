@@ -783,9 +783,10 @@ def parse_acgme_summary_report(df):
             break
 
     # Resident columns are any columns after category/minimum that contain numbers
+    # Skip Unnamed columns (blank columns from Excel formatting)
     resident_cols = []
     for col in df.columns:
-        if col != cat_col and col != min_col:
+        if col != cat_col and col != min_col and not str(col).startswith('Unnamed'):
             # Check if this column has numeric data
             try:
                 if df[col].dropna().apply(lambda x: str(x).replace(',', '').isdigit() if pd.notna(x) else True).any():
@@ -795,7 +796,7 @@ def parse_acgme_summary_report(df):
 
     # If no obvious resident columns found, take remaining columns
     if not resident_cols:
-        resident_cols = [c for c in df.columns if c not in [cat_col, min_col]]
+        resident_cols = [c for c in df.columns if c not in [cat_col, min_col] and not str(c).startswith('Unnamed')]
 
     # Initialize result for each resident
     for res_col in resident_cols:
@@ -3837,7 +3838,7 @@ with tabs[4]:
             if resident and categories:
                 # Clean resident name
                 res_name = str(resident).strip()
-                if res_name.lower() not in ['minimum', 'min', 'category', 'nan', '']:
+                if res_name.lower() not in ['minimum', 'min', 'category', 'nan', ''] and not res_name.startswith('Unnamed'):
                     # Fuzzy match to roster name
                     matched_name = fuzzy_match_resident(res_name, roster_names)
                     if matched_name != res_name:
