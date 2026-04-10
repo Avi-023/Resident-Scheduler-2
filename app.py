@@ -3177,7 +3177,7 @@ _default_roster=pd.DataFrame([
     ["Brittany Steffens","PGY-3","N","Y","","","",""],
     ["Zoe Wecht","PGY-2","N","Y","","","",""],
     ["Jessica Marks","PGY-2","N","Y","","","",""],
-    ["Jacob Allenabaugh","PGY-2","N","Y","","","",""],
+    ["Jacob Allenbaugh","PGY-2","N","Y","","","",""],
     ["Masum Rahman","PGY-1","N","Y","","","",""],
     ["Intern 1","PGY-1","N","Y","","","",""],
     ["Intern 2","PGY-1","N","Y","","","",""],
