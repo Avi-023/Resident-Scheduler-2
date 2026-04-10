@@ -31,7 +31,11 @@ def load_case_logs_from_cache():
         if CASE_LOG_CACHE_FILE.exists():
             with open(CASE_LOG_CACHE_FILE, "rb") as f:
                 data = pickle.load(f)
-                return data.get("case_logs", {})
+                case_logs = data.get("case_logs", {})
+                # Clean out invalid entries (Unnamed columns, blank keys)
+                case_logs = {k: v for k, v in case_logs.items()
+                             if k and not str(k).startswith('Unnamed') and str(k).strip().lower() not in ['nan', '', 'none']}
+                return case_logs
     except Exception:
         pass
     return {}
