@@ -15,6 +15,7 @@ import altair as alt
 SCHEDULE_CACHE_FILE = Path(__file__).parent / ".schedule_cache.pkl"
 CASE_LOG_IMPORT_FOLDER = Path(__file__).parent / "imports" / "case_logs"
 CASE_LOG_CACHE_FILE = Path(__file__).parent / ".case_logs_cache.pkl"
+ROSTER_CACHE_FILE = Path(__file__).parent / ".roster_cache.pkl"
 
 def save_case_logs_to_cache(case_logs: dict):
     """Save case logs to file for persistence."""
@@ -34,6 +35,27 @@ def load_case_logs_from_cache():
     except Exception:
         pass
     return {}
+
+def save_roster_to_cache(roster_df):
+    """Save roster to file for persistence across sessions."""
+    try:
+        with open(ROSTER_CACHE_FILE, "wb") as f:
+            pickle.dump({"roster_df": roster_df, "saved_at": time.time()}, f)
+    except Exception:
+        pass
+
+def load_roster_from_cache():
+    """Load roster from cache file. Returns None if no cache exists."""
+    try:
+        if ROSTER_CACHE_FILE.exists():
+            with open(ROSTER_CACHE_FILE, "rb") as f:
+                data = pickle.load(f)
+                roster = data.get("roster_df")
+                if roster is not None and not roster.empty:
+                    return roster
+    except Exception:
+        pass
+    return None
 
 def scan_import_folder_for_case_logs():
     """Scan the import folder for new case log files and import them."""
@@ -3156,15 +3178,19 @@ _default_roster=pd.DataFrame([
     ["Zoe Wecht","PGY-2","N","Y","","","",""],
     ["Jessica Marks","PGY-2","N","Y","","","",""],
     ["Jacob Allenabaugh","PGY-2","N","Y","","","",""],
+    ["Masum Rahman","PGY-1","N","Y","","","",""],
     ["Intern 1","PGY-1","N","Y","","","",""],
     ["Intern 2","PGY-1","N","Y","","","",""],
-    ["Intern 3","PGY-1","N","Y","","","",""],
     ["Intern 4 (Prelim)","PGY-1","Y","Y","","","",""],
     ["Intern 5 (Prelim)","PGY-1","Y","Y","","","",""],
 ], columns=["Resident","PGY","Prelim","Include?","Notes","Vacation 1","Vacation 2","Vacation 3"])
 
 if "roster_table" not in st.session_state:
-    st.session_state.roster_table = _default_roster.copy()
+    _cached_roster = load_roster_from_cache()
+    if _cached_roster is not None:
+        st.session_state.roster_table = _cached_roster
+    else:
+        st.session_state.roster_table = _default_roster.copy()
 
 # Load saved schedule from cache on startup
 if "schedule_df" not in st.session_state:
@@ -3332,6 +3358,7 @@ with tabs[0]:
     with st.expander("Roster (editable)", expanded=not has_schedule):
         roster = show_table(st.session_state.roster_table, "roster_editor", editable=True, hide_index=True, index_name_hint="Resident")
         st.session_state.roster_table = roster.copy()
+        save_roster_to_cache(roster)
 
         st.checkbox("Auto-assign weekend call after edits", True, key="auto_call")
         st.checkbox("Auto-fill vacation dates from Roster columns", True, key="auto_vacation",
