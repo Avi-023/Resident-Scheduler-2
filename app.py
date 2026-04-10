@@ -3908,6 +3908,7 @@ Supports PDF and Excel formats.
         if uploaded_file:
             try:
                 df = None
+                all_sheet_dfs = {}
                 if uploaded_file.name.lower().endswith('.pdf'):
                     if HAS_PDFPLUMBER:
                         file_buffer = io.BytesIO(uploaded_file.read())
@@ -3968,8 +3969,32 @@ Supports PDF and Excel formats.
                 elif uploaded_file.name.endswith('.csv'):
                     df = pd.read_csv(uploaded_file)
                 else:
-                    # Try reading Excel, handling header row issues
-                    df = pd.read_excel(uploaded_file, header=None)  # Read without headers first
+                    # Try reading Excel — check for multiple sheets
+                    xls = pd.ExcelFile(uploaded_file)
+                    sheet_names = xls.sheet_names
+                    all_sheet_dfs = {}
+                    for sn in sheet_names:
+                        raw = pd.read_excel(xls, sheet_name=sn, header=None)
+                        if raw.dropna(how='all').empty:
+                            continue
+                        # Auto-detect header row per sheet
+                        auto_hr = 0
+                        for i in range(min(20, len(raw))):
+                            row_vals_lower = [str(v).lower().strip() for v in raw.iloc[i] if pd.notna(v) and str(v).strip()]
+                            if 'category' in row_vals_lower and 'minimum' in row_vals_lower:
+                                auto_hr = i
+                                break
+                            elif 'category' in row_vals_lower:
+                                auto_hr = i
+                        parsed_sheet = pd.read_excel(xls, sheet_name=sn, header=auto_hr)
+                        parsed_sheet.columns = parsed_sheet.columns.astype(str).str.strip()
+                        all_sheet_dfs[sn] = parsed_sheet
+
+                    if len(all_sheet_dfs) > 1:
+                        st.info(f"📑 Found {len(all_sheet_dfs)} sheets: {', '.join(all_sheet_dfs.keys())}")
+
+                    # Use first non-empty sheet as the display df
+                    df = list(all_sheet_dfs.values())[0] if all_sheet_dfs else None
 
                 if df is not None and not df.empty:
                     st.success(f"✅ Loaded file with {len(df)} rows")
@@ -3978,43 +4003,28 @@ Supports PDF and Excel formats.
                     st.markdown("**Raw Data Preview (first 10 rows):**")
                     st.dataframe(df.head(10), use_container_width=True)
 
-                    # Auto-detect header row: find row containing both 'category' and 'minimum'
-                    auto_header_row = 0
-                    for i in range(min(20, len(df))):
-                        row_vals_lower = [str(v).lower().strip() for v in df.iloc[i] if pd.notna(v) and str(v).strip()]
-                        if 'category' in row_vals_lower and 'minimum' in row_vals_lower:
-                            auto_header_row = i
-                            break
-                        elif 'category' in row_vals_lower:
-                            auto_header_row = i
-
-                    # Let user select header row
-                    header_row = st.number_input("Which row contains the column headers? (0 = first row)",
-                                                  min_value=0, max_value=min(20, len(df)-1), value=auto_header_row, key="header_row_select")
-
-                    # Re-read with correct header
-                    uploaded_file.seek(0)
-                    if uploaded_file.name.endswith('.csv'):
-                        df = pd.read_csv(uploaded_file, header=int(header_row))
-                    else:
-                        df = pd.read_excel(uploaded_file, header=int(header_row))
-
-                    df.columns = df.columns.astype(str).str.strip()
-
-                    st.markdown("**Parsed Data (with headers):**")
-                    st.dataframe(df.head(10), use_container_width=True)
-
                     st.markdown(f"**Columns found:** {', '.join(df.columns.tolist())}")
 
-                    # Check if it's summary format
+                    # Check if it's summary format — import all sheets at once
                     if is_summary_format(df):
                         st.info("📊 Detected ACGME summary format (category totals)")
 
+                        # Show residents found across all sheets
+                        if all_sheet_dfs and len(all_sheet_dfs) > 1:
+                            for sn, sdf in all_sheet_dfs.items():
+                                res_cols = [c for c in sdf.columns if not str(c).startswith('Unnamed') and c.lower() not in ['category', 'minimum']]
+                                if res_cols:
+                                    st.caption(f"**{sn}:** {', '.join(res_cols)}")
+
                         if st.button("Import Summary Data"):
-                            imported = import_summary_file(df, uploaded_file.name)
-                            if imported:
+                            all_imported = []
+                            for sn, sdf in (all_sheet_dfs if all_sheet_dfs else {uploaded_file.name: df}).items():
+                                if is_summary_format(sdf):
+                                    imported = import_summary_file(sdf, uploaded_file.name)
+                                    all_imported.extend(imported)
+                            if all_imported:
                                 save_case_logs_to_cache(st.session_state.case_logs)
-                                st.success(f"✅ Imported data for: {', '.join(imported)}")
+                                st.success(f"✅ Imported data for: {', '.join(all_imported)}")
                                 st.rerun()
                             else:
                                 st.error("Could not parse resident data from file. Check the format.")
