@@ -813,9 +813,7 @@ def parse_acgme_summary_report(df):
         is_subcategory = cat_value.startswith('    ') or cat_value.startswith('\t')
         cat_name = cat_value.strip()
 
-        # Skip total rows
-        if 'total' in cat_name.lower() and 'major' in cat_name.lower():
-            continue
+        # Skip generic total rows (but keep "Total Major Cases" for dashboard)
         if cat_name.lower() == 'total':
             continue
 
