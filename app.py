@@ -4221,7 +4221,7 @@ Supports PDF and Excel formats.
                 "PGY": pgy,
                 "Cases": total_current,
                 "Required": total_minimum,
-                "Progress %": round(pct, 1),
+                "Progress %": round(pct),
                 "Remaining": max(0, total_minimum - total_current)
             })
 
